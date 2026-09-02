@@ -1,5 +1,5 @@
 # NCS-SMLauncher
-A music launcher for people that need all in one. With the style of NoCopyrightSong of course.
+A music launcher for people who need a feature-rich yet simple music launcher. In the style of NoCopyrightSong, of course.
 
 <img width="1470" height="923" alt="Screenshot 2026-09-02 at 12 26 05 pm" src="https://github.com/user-attachments/assets/e4f2ecf2-9fc3-49b9-a81c-c4d7c7344aa4" />
 
