@@ -50,6 +50,7 @@ import hashlib
 import numpy as np
 
 from media_keys import MediaKeyTap, open_accessibility_settings
+from ncs_sphere import draw_ncs_sphere
 
 try:
     import sounddevice as sd
@@ -275,127 +276,9 @@ def neon_color(t, sat=0.95, val=1.0):
 # Real NCS sphere: a 3D point cloud on a Fibonacci sphere, displaced by a
 # flowing wave field, splatted additively with numpy (fast enough for 60fps)
 # --------------------------------------------------------------------------
-SPHERE_POINTS = 30000
-_sphere_cache = {}
-
-
-def _fibonacci_sphere(n):
-    """Evenly distributed points on a unit sphere (Fibonacci lattice)."""
-    i = np.arange(n, dtype=np.float32)
-    phi = np.arccos(1.0 - 2.0 * (i + 0.5) / n)
-    theta = np.pi * (1.0 + 5.0 ** 0.5) * i
-    sp = np.sin(phi)
-    return np.stack([sp * np.cos(theta), np.cos(phi), sp * np.sin(theta)], axis=1)
-
-
-def _get_sphere_geometry(w, h):
-    """Cache the point cloud, sized to the current window."""
-    key = (w, h, SPHERE_POINTS)
-    geo = _sphere_cache.get(key)
-    if geo is None:
-        if len(_sphere_cache) > 4:
-            _sphere_cache.clear()
-        geo = {"base": _fibonacci_sphere(SPHERE_POINTS)}
-        _sphere_cache[key] = geo
-    return geo
-
-
-def _blend_splats(buf, xs, ys, wr, wg, wb, w, h, offsets=((0, 0),)):
-    """Additively splat weighted RGB points into a float (h, w, 3) buffer."""
-    n = w * h
-    idx_parts, r_parts, g_parts, b_parts = [], [], [], []
-    for dx, dy in offsets:
-        xx = xs + dx
-        yy = ys + dy
-        m = (xx >= 0) & (xx < w) & (yy >= 0) & (yy < h)
-        if not m.any():
-            continue
-        idx_parts.append(yy[m] * w + xx[m])
-        r_parts.append(wr[m])
-        g_parts.append(wg[m])
-        b_parts.append(wb[m])
-    if not idx_parts:
-        return
-    idx = np.concatenate(idx_parts)
-    buf[..., 0] += np.bincount(idx, weights=np.concatenate(r_parts),
-                              minlength=n).reshape(h, w)
-    buf[..., 1] += np.bincount(idx, weights=np.concatenate(g_parts),
-                              minlength=n).reshape(h, w)
-    buf[..., 2] += np.bincount(idx, weights=np.concatenate(b_parts),
-                              minlength=n).reshape(h, w)
-
-
-def draw_ncs_sphere(screen, player, w, h, t):
-    """The real NCS ball: a glowing point-cloud sphere wrapped in a gold membrane."""
-    mag = player.spectrum()
-    cx, cy = w // 2, h // 2
-    base = _get_sphere_geometry(w, h)["base"]
-
-    energy = float(np.mean(mag)) if len(mag) else 0.0
-    bass = float(np.mean(mag[:10])) if len(mag) >= 10 else 0.0
-    amp = 0.06 + 0.20 * bass
-
-    # --- 3D rotation (spin about Y + wobbling tilt about X) ---
-    ang = t * 0.35
-    tilt = 0.35 + 0.12 * math.sin(t * 0.4)
-    ca, sa = math.cos(ang), math.sin(ang)
-    ct, st = math.cos(tilt), math.sin(tilt)
-    x = base[:, 0] * ca + base[:, 2] * sa
-    z = -base[:, 0] * sa + base[:, 2] * ca
-    y1 = base[:, 1] * ct - z * st
-    z1 = base[:, 1] * st + z * ct
-    x, y, z = x, y1, z1
-
-    # --- flowing wave field evaluated in the sphere's local frame ---
-    bx, by, bz = base[:, 0], base[:, 1], base[:, 2]
-    p1 = 4.0 * (bx * math.cos(t * 0.7) + by * math.sin(t * 0.7)) + 1.7 * t
-    p2 = 2.7 * (by * math.cos(t * 0.5 + 1.1) + bz * math.sin(t * 0.5 + 1.1)) - 1.3 * t
-    p3 = 6.1 * (bz * math.cos(t * 0.9 + 2.2) + bx * math.sin(t * 0.9 + 2.2)) + 2.1 * t
-    field = (0.45 * np.sin(p1) + 0.35 * np.sin(p2) + 0.25 * np.sin(p3))
-    f01 = np.clip((field + 1.05) / 2.1, 0.0, 1.0)
-    # sharp crest so the membrane reads as a thin bright band, like the ref
-    ridge = np.clip((f01 - 0.52) / 0.48, 0.0, 1.0) ** 2
-
-    # --- displace along the surface normal, then project with perspective ---
-    radius = min(w, h) * 0.30 * (1.0 + 0.10 * bass)
-    disp = 1.0 + amp * field
-    fov = 3.2
-    persp = fov / (fov - z * disp)
-    sx = (cx + x * disp * radius * persp).astype(np.int32)
-    sy = (cy - y * disp * radius * persp).astype(np.int32)
-
-    # depth fade: points near the silhouette are dimmer
-    depth = np.clip(0.30 + 0.70 * (z * 0.5 + 0.5), 0.0, 1.0)
-    # the dark field is faint, the crest is hot -> black interior, gold ribbons
-    lum = (0.05 + 1.55 * ridge) * depth
-
-    cr = (120 + 135 * ridge) * lum
-    cg = (88 + 150 * ridge) * lum
-    cb = (10 + 24 * ridge) * lum
-
-    buf = np.zeros((h, w, 3), dtype=np.float32)
-
-    # pass 1: the whole point cloud, single pixel dots
-    _blend_splats(buf, sx, sy, cr, cg, cb, w, h, offsets=((0, 0),))
-    # pass 2: bright ridge points, 3x3 so the membrane reads as a glowing band
-    hi = ridge > 0.30
-    if hi.any():
-        _blend_splats(buf, sx[hi], sy[hi],
-                      cr[hi] * 0.75, cg[hi] * 0.75, cb[hi] * 0.75, w, h,
-                      offsets=((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
-                               (1, 1), (-1, -1), (1, -1), (-1, 1)))
-
-    img = np.clip(buf, 0, 255).astype(np.uint8)
-    surf = pygame.surfarray.make_surface(np.transpose(img, (1, 0, 2)))
-    screen.blit(surf, (0, 0))
-
-    # faint rim so the sphere silhouette is readable against a dark background,
-    # without washing out the point cloud
-    rim = pygame.Surface((w, h), pygame.SRCALPHA)
-    gcol = neon_color((t * 0.05) % 1.0, sat=0.9, val=1.0)
-    pygame.draw.circle(rim, (*gcol, 30), (cx, cy), int(radius * 1.03), 2)
-    pygame.draw.circle(rim, (*gcol, 16), (cx, cy), int(radius * 1.10), 1)
-    screen.blit(rim, (0, 0))
+# The NCS sphere lives in its own module (src/ncs_sphere.py) so it can be
+# iterated on and benchmarked headlessly without importing the whole app.
+# Imported at the top of the file with the other modules.
 
 
 def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata):
