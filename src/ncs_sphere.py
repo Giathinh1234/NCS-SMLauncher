@@ -45,6 +45,17 @@ What each earlier attempt got wrong, and the fix:
 8. The 9-tap membrane fill must be ONE splat call, not nine. Nine separate
    calls cost 69 ms/frame at 1280x800 purely from re-masking and re-allocating
    the index list per tap; one call with all nine offsets costs ~9 ms.
+9. THE BALL WAS FROZEN. The audio was read as `mean(mag[:10]) / 255.0 * 2.2`,
+   but Player.spectrum() already ends with `np.clip(mag, 0, 1)` -- it returns
+   0..1, not 0..255. Dividing by 255 flattened the entire signal to
+   0.001-0.008 and the *2.2 then clipped it, so quiet and loud rendered
+   byte-identical frames (measured pixel diff between mid and loud: 0.000).
+   With the correct range the same audio spans 0.153 .. 0.936. This is why the
+   sphere appeared to be a still image.
+10. The amplitudes were far too timid even once the range was fixed: the
+   radius swung only 28px on a 640px window and disp_amp only 25%. Now the
+   radius swings 286..345px and disp_amp 0.04..0.17, and the field drifts 3-5x
+   faster (the old 0.6 rad/s meant a 10s pattern cycle).
 """
 
 import math
@@ -61,14 +72,33 @@ SPHERE_POINTS_MAX = 240000
 # a cos(lat)-compensated nu x nv grid yields exactly 0.741 * nu * nv points
 _COSLAT_POINTS_FACTOR = 0.741
 
+# --- geometry ---
+# The ball pulses with the bass, so its radius varies between
+# _R_BASE*(1-_R_SWING) and _R_BASE. Density must NOT be normalized against the
+# CURRENT radius: doing so makes the brightness correction swing with volume
+# (measured k = 2.23 at full bass vs 5.25 at silence, so the ball pumped 2.5x
+# brighter when quiet, mean luminance 508 vs the reference's 203). The grid
+# and the normalization both key off a FIXED reference radius of _R_BASE, and
+# the pulse only scales the projection.
+_R_BASE = 0.44
+_R_SWING = 0.30
+
 # --- density normalization, calibrated in note 4 ---
+# Recalibrated after the audio fix: with the ball now pulsing and correctly
+# sized, 1.2/0.55 washed the interior out (mean 336 vs the reference's 203).
+# Measured sweep of (_FILL_W, _NORM_POW) -> mean luminance at 640x640:
+#     0.55 / 1.2 -> 336      0.25 / 0.9 -> 241
+#     0.35 / 1.0 -> 271      0.18 / 0.8 -> 226   <- chosen
+#     0.12 / 0.7 -> 218
+# The floor is set by the base dark-dot level rather than the fill, so this is
+# as dim as the crest can go without losing the gold.
 _REF_PPP = 8.0
-_NORM_POW = 1.2
+_NORM_POW = 0.8
 
 # --- crest shape, calibrated against the reference's 10.4% bright area ---
 _RIDGE_LO = 0.70
 _RIDGE_POW = 2.4
-_FILL_W = 0.55
+_FILL_W = 0.18
 
 # measured reference colours
 _CREST = (255.0, 227.0, 152.0)
@@ -84,8 +114,12 @@ _sphere_cache = {}
 
 
 def _grid_for(w, h):
-    """Pick a lat/lon grid sized to the window, bounded by the point cap."""
-    ball_px = math.pi * (min(w, h) * 0.44) ** 2
+    """Pick a lat/lon grid sized to the window, bounded by the point cap.
+
+    Keyed to the FIXED _R_BASE, not the pulsing radius, so the point budget
+    does not swing with volume (see the _R_BASE comment).
+    """
+    ball_px = math.pi * (min(w, h) * _R_BASE) ** 2
     want = min(ball_px / SPHERE_PPP_TARGET, SPHERE_POINTS_MAX)
     scale = math.sqrt(want / (_COSLAT_POINTS_FACTOR * SPHERE_NU * SPHERE_NV))
     nu = max(160, int(SPHERE_NU * scale))
@@ -170,25 +204,79 @@ def _splat(w, h, sx, sy, r, g, b, offsets=(), weight=1.0, out=None):
     return out
 
 
-def _sphere_field(la, lo, t, mag, bass):
-    """Domain-warped wave field.
+def _bands(mag):
+    """Split the spectrum into (bass, mid, high), each 0..1.
+
+    Player.spectrum() returns values already normalized to 0..1 (it ends with
+    np.clip(mag, 0, 1)), so these must NOT be divided by 255. The previous
+    code did `mean(mag[:10]) / 255.0 * 2.2`, which put the entire signal at
+    0.001-0.008 and then clipped at 1.0 -- measured against realistic music:
+        level 0.15 -> 0.001        level 0.75 -> 0.007
+    i.e. the ball was effectively frozen and identical for quiet and loud.
+    With the correct range the same audio spans 0.153 .. 0.936, which is what
+    makes it visibly pulse.
+    """
+    n = len(mag)
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    def band(lo, hi):
+        hi = min(hi, n)
+        if lo >= hi:
+            return 0.0
+        return float(np.clip(np.mean(mag[lo:hi]), 0.0, 1.0))
+    return band(0, 12), band(12, 120), band(120, 420)
+
+
+def _smooth(prev, target, rate, dt):
+    """Frame-rate independent exponential smoothing.
+
+    A raw FFT frame is jittery, and feeding it straight into a radius makes the
+    ball twitch. Smoothing gives the punchy-but-fluid feel of the reference.
+    """
+    if prev is None:
+        return target
+    a = 1.0 - math.exp(-rate * dt)
+    return prev + (target - prev) * a
+
+
+# animation state, per running instance
+_anim = {"bass": None, "mid": None, "high": None, "t_prev": None}
+
+
+def _reset_anim():
+    """Clear the smoothing state (call between tracks for an instant reset)."""
+    _anim["bass"] = _anim["mid"] = _anim["high"] = _anim["t_prev"] = None
+
+
+def _sphere_field(la, lo, t, bass, mid, high, dt):
+    """Domain-warped wave field, driven by the audio bands.
 
     The warp (a sine of a sine) is what makes the membrane read as draped
-    fabric rather than a few round blobs.
-    """
-    # high-band energy modulates the fine texture, so the dots shimmer
-    wob = 0.35 * float(np.mean(mag[-64:])) if len(mag) >= 64 else 0.0
-    amp = 0.6 + 0.8 * bass
+    fabric rather than a few round blobs. Each band drives a different part of
+    the shape so the motion reads as a response to the music, not a generic
+    idle wobble:
 
-    # la and lo are arrays, so these must be numpy, not math
-    w = 2.5 * np.sin(1.0 * la + 0.45 * t) + 1.0 * np.sin(1.3 * lo - 0.5 * t)
-    return (0.80 * np.sin(0.80 * lo + 0.95 * la + w * amp + 0.6 * t)
-            + 0.12 * np.sin(6.0 * la + 4.0 * lo + 0.4 * t + wob * 6.0)
-            + 0.08 * np.cos(1.8 * la - 1.2 * lo - 0.4 * t))
+        bass  -> warp depth and the crest sharpness (the punch)
+        mid   -> the large-scale sheet drift
+        high  -> the fine surface texture, which shimmers
+    """
+    # Speeds are 3-5x the previous values. The old field drifted at 0.6 rad/s,
+    # so a full pattern cycle took ~10s and looked static next to real music.
+    warp = (2.6 * np.sin(1.0 * la + 1.9 * t)
+            + 1.1 * np.sin(1.3 * lo - 1.6 * t))
+    warp = warp * (0.55 + 0.95 * bass)
+
+    return (0.78 * np.sin(0.80 * lo + 0.95 * la + warp + 2.1 * t + mid * 1.4)
+            + 0.14 * np.sin(6.0 * la + 4.0 * lo + 3.2 * t + high * 5.0)
+            + 0.08 * np.cos(1.8 * la - 1.2 * lo - 1.3 * t))
 
 
 def draw_ncs_sphere(screen, player, w, h, t):
-    """Draw the NCS sphere: dark gold dot texture under a flowing gold membrane."""
+    """Draw the NCS sphere: dark gold dot texture under a flowing gold membrane.
+
+    Animated and audio-reactive. The sphere pulses with the bass, ripples on
+    the mids, and shimmers on the highs.
+    """
     mag = player.spectrum()
     geo = _sphere_geometry(w, h)
     pts = geo["base"]
@@ -196,18 +284,32 @@ def draw_ncs_sphere(screen, player, w, h, t):
 
     cx, cy = w // 2, h // 2
 
-    energy = float(np.mean(mag)) if len(mag) else 0.0
-    bass = float(np.mean(mag[:10])) / 255.0 if len(mag) >= 10 else 0.0
-    bass = float(np.clip(bass * 2.2, 0.0, 1.0))
+    # --- smoothed audio bands ---
+    raw_bass, raw_mid, raw_high = _bands(mag)
+    tp = _anim["t_prev"]
+    dt = 0.033 if tp is None else max(0.0, min(0.1, t - tp))
+    _anim["t_prev"] = t
+    bass = _smooth(_anim["bass"], raw_bass, 9.0, dt)
+    mid = _smooth(_anim["mid"], raw_mid, 7.0, dt)
+    high = _smooth(_anim["high"], raw_high, 14.0, dt)
+    _anim["bass"], _anim["mid"], _anim["high"] = bass, mid, high
 
-    # Explicit radial pulse (note 7): makes the audio response monotonic.
-    radius = min(w, h) * 0.44 * (1.0 + 0.10 * bass)
+    # Radially scaled by the smoothed bass, with the MAXIMUM fitted to _R_BASE
+    # so a loud passage never pushes the ball past the window (at a 0.44 base
+    # the rim was clipped on all four edges). The swing is
+    # _R_BASE*_R_SWING = 0.132 of the short side, i.e. 35px on a 640px window.
+    radius = min(w, h) * _R_BASE * (1.0 - _R_SWING + _R_SWING * bass)
 
     bx, by, bz = pts[:, 0], pts[:, 1], pts[:, 2]
 
-    # --- rotation: slow spin about Y, wobbling tilt about X ---
-    ang = t * 0.28
-    tilt = 0.35 + 0.12 * math.sin(t * 0.4)
+    # --- rotation: spin about Y, with only a slight tilt about X ---
+    # The tilt is deliberately small. A sphere's silhouette is only circular at
+    # tilt 0; a 0.5 rad (29 deg) tilt made the bbox 507x553, i.e. 1.09 aspect,
+    # against the reference's 901x900 circle. Keep it under ~0.12 rad (7 deg)
+    # so the silhouette reads as a ball, and get the visible motion from the
+    # Y spin and the field instead.
+    ang = t * 0.30
+    tilt = 0.10 + 0.06 * math.sin(t * 0.5) + 0.03 * math.sin(t * 1.7)
     ca, sa = math.cos(ang), math.sin(ang)
     ct, st = math.cos(tilt), math.sin(tilt)
     x = bx * ca + bz * sa
@@ -215,11 +317,13 @@ def draw_ncs_sphere(screen, player, w, h, t):
     y = by * ct - z0 * st
     z = by * st + z0 * ct
 
-    # --- limb highlight (note 5) ---
+    # --- limb highlight: the silhouette of the UNIT sphere is the z0 == 0
+    #     circle, so anchor the rim there and keep it thin ---
     rim = np.exp(-((z0 / 0.055) ** 2))
 
-    f = _sphere_field(la, lo, t, mag, bass)
-    disp_amp = 0.030 + 0.020 * bass
+    f = _sphere_field(la, lo, t, bass, mid, high, dt)
+    # Bass drives the ripple depth: 0.04 at rest up to 0.17 on a loud hit.
+    disp_amp = 0.040 + 0.130 * bass
     disp = 1.0 + disp_amp * f
     persp = 3.0 / (3.0 - z * disp)
     sx = (cx + x * disp * radius * persp).astype(np.int32)
@@ -238,9 +342,10 @@ def draw_ncs_sphere(screen, player, w, h, t):
     cg = (_CREST[1] * gold + _DARK[1] * (1 - gold)) * shade
     cb = (_CREST[2] * gold + _DARK[2] * (1 - gold)) * shade
 
-    # Density normalization (note 4).
-    ball_px = math.pi * radius * radius
-    ppp = ball_px / len(pts)                 # px per point, higher = sparser
+    # Density normalization (note 4). Keyed to the FIXED _R_BASE reference
+    # ball, not the pulsing radius, so brightness does not pump with volume.
+    ref_ball_px = math.pi * (min(w, h) * _R_BASE) ** 2
+    ppp = ref_ball_px / len(pts)             # px per point, higher = sparser
     shortfall = _REF_PPP / ppp              # >1 when sparser than the reference
     k = shortfall ** _NORM_POW if shortfall > 1.0 else 1.0
     cr, cg, cb = cr * k, cg * k, cb * k
@@ -255,9 +360,17 @@ def draw_ncs_sphere(screen, player, w, h, t):
         bb = np.where(solid, cb, 0.0) * _FILL_W
         _splat(w, h, sx, sy, br, bg, bb, _FILL3, out=buf)
 
-    img = np.clip(buf, 0, 255)
-    # lift saturation so overlapping gold goes vivid yellow, not white
-    lum = img.max(axis=2, keepdims=True)
-    img = np.clip(lum * 0.10 + img * 0.90, 0, 255).astype(np.uint8)
+    # Tone-map and saturate. The first version used np.max(axis=2) and a
+    # second full-size product, which cost 18.3 ms/frame at 1280x800. The
+    # "optimization" that replaced it with a single global buf.max() was
+    # WRONG: that added a constant to every pixel, lifting the black
+    # background to luminance 22 instead of 0.
+    # This is correct and still cheaper: clip in place, then scale the two
+    # cool channels down relative to R, which is what makes overlapping gold
+    # read as vivid yellow rather than white.
+    np.clip(buf, 0, 255, out=buf)
+    buf[..., 1] *= 0.90
+    buf[..., 2] *= 0.80
+    img = buf.astype(np.uint8)
     screen.blit(pygame.surfarray.make_surface(
         np.transpose(img, (1, 0, 2))), (0, 0))
