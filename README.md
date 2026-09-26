@@ -3,7 +3,6 @@ A music launcher for people who need a feature-rich yet simple music launcher. I
 
 <img width="1470" height="923" alt="Screenshot 2026-09-02 at 12 26 05 pm" src="https://github.com/user-attachments/assets/e4f2ecf2-9fc3-49b9-a81c-c4d7c7344aa4" />
 
-
 This is a music launcher that takes some inspiration from NCS. This was made with AI so...
 
 I have plan to make all the art made by me. 
@@ -27,6 +26,8 @@ Avg 'bars format' visualizer and "NCS style" visualizer (Its not finish yet)
 <img width="1582" height="673" alt="Screenshot 2026-09-02 at 12 33 22 pm" src="https://github.com/user-attachments/assets/287fc015-2b2b-454e-9e86-5173c80a500f" />
 
 <img width="1582" height="673" alt="Screenshot 2026-09-02 at 12 33 16 pm" src="https://github.com/user-attachments/assets/54ce02d4-7fe1-48f3-9d19-77a735504120" />
+
+**All of the shown image is v0.9 version
 
 # Donation
 
