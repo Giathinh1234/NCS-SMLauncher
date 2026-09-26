@@ -14,11 +14,15 @@ Controls:
     Space         pause / resume
     Left / Right  seek +/-5s
     M             mute
-    F             cycle visualizer mode (bars / mirror / radial / disc)
+    F             cycle visualizer mode
+                  (bars / mirror / radial / disc / album)
+    C             open the interactive Hermes chat panel
+                  (type a question, Enter sends, Esc closes)
     T             open torrent overlay — paste an infohash or magnet link,
                   it downloads natively via libtorrent and lands in your library
     O             change source folder
     Esc / Q       quit
+    The window is resizable (minimum 640x480).
 
 Requires:
     pip install numpy sounddevice miniaudio pygame libtorrent mutagen pillow
@@ -34,6 +38,7 @@ import urllib.parse
 import webbrowser
 import threading
 import subprocess
+import shutil
 import queue
 import colorsys
 from PIL import Image, ImageDraw
@@ -266,6 +271,133 @@ def neon_color(t, sat=0.95, val=1.0):
     return int(r * 255), int(g * 255), int(b * 255)
 
 
+# --------------------------------------------------------------------------
+# Real NCS sphere: a 3D point cloud on a Fibonacci sphere, displaced by a
+# flowing wave field, splatted additively with numpy (fast enough for 60fps)
+# --------------------------------------------------------------------------
+SPHERE_POINTS = 30000
+_sphere_cache = {}
+
+
+def _fibonacci_sphere(n):
+    """Evenly distributed points on a unit sphere (Fibonacci lattice)."""
+    i = np.arange(n, dtype=np.float32)
+    phi = np.arccos(1.0 - 2.0 * (i + 0.5) / n)
+    theta = np.pi * (1.0 + 5.0 ** 0.5) * i
+    sp = np.sin(phi)
+    return np.stack([sp * np.cos(theta), np.cos(phi), sp * np.sin(theta)], axis=1)
+
+
+def _get_sphere_geometry(w, h):
+    """Cache the point cloud, sized to the current window."""
+    key = (w, h, SPHERE_POINTS)
+    geo = _sphere_cache.get(key)
+    if geo is None:
+        if len(_sphere_cache) > 4:
+            _sphere_cache.clear()
+        geo = {"base": _fibonacci_sphere(SPHERE_POINTS)}
+        _sphere_cache[key] = geo
+    return geo
+
+
+def _blend_splats(buf, xs, ys, wr, wg, wb, w, h, offsets=((0, 0),)):
+    """Additively splat weighted RGB points into a float (h, w, 3) buffer."""
+    n = w * h
+    idx_parts, r_parts, g_parts, b_parts = [], [], [], []
+    for dx, dy in offsets:
+        xx = xs + dx
+        yy = ys + dy
+        m = (xx >= 0) & (xx < w) & (yy >= 0) & (yy < h)
+        if not m.any():
+            continue
+        idx_parts.append(yy[m] * w + xx[m])
+        r_parts.append(wr[m])
+        g_parts.append(wg[m])
+        b_parts.append(wb[m])
+    if not idx_parts:
+        return
+    idx = np.concatenate(idx_parts)
+    buf[..., 0] += np.bincount(idx, weights=np.concatenate(r_parts),
+                              minlength=n).reshape(h, w)
+    buf[..., 1] += np.bincount(idx, weights=np.concatenate(g_parts),
+                              minlength=n).reshape(h, w)
+    buf[..., 2] += np.bincount(idx, weights=np.concatenate(b_parts),
+                              minlength=n).reshape(h, w)
+
+
+def draw_ncs_sphere(screen, player, w, h, t):
+    """The real NCS ball: a glowing point-cloud sphere wrapped in a gold membrane."""
+    mag = player.spectrum()
+    cx, cy = w // 2, h // 2
+    base = _get_sphere_geometry(w, h)["base"]
+
+    energy = float(np.mean(mag)) if len(mag) else 0.0
+    bass = float(np.mean(mag[:10])) if len(mag) >= 10 else 0.0
+    amp = 0.06 + 0.20 * bass
+
+    # --- 3D rotation (spin about Y + wobbling tilt about X) ---
+    ang = t * 0.35
+    tilt = 0.35 + 0.12 * math.sin(t * 0.4)
+    ca, sa = math.cos(ang), math.sin(ang)
+    ct, st = math.cos(tilt), math.sin(tilt)
+    x = base[:, 0] * ca + base[:, 2] * sa
+    z = -base[:, 0] * sa + base[:, 2] * ca
+    y1 = base[:, 1] * ct - z * st
+    z1 = base[:, 1] * st + z * ct
+    x, y, z = x, y1, z1
+
+    # --- flowing wave field evaluated in the sphere's local frame ---
+    bx, by, bz = base[:, 0], base[:, 1], base[:, 2]
+    p1 = 4.0 * (bx * math.cos(t * 0.7) + by * math.sin(t * 0.7)) + 1.7 * t
+    p2 = 2.7 * (by * math.cos(t * 0.5 + 1.1) + bz * math.sin(t * 0.5 + 1.1)) - 1.3 * t
+    p3 = 6.1 * (bz * math.cos(t * 0.9 + 2.2) + bx * math.sin(t * 0.9 + 2.2)) + 2.1 * t
+    field = (0.45 * np.sin(p1) + 0.35 * np.sin(p2) + 0.25 * np.sin(p3))
+    f01 = np.clip((field + 1.05) / 2.1, 0.0, 1.0)
+    # sharp crest so the membrane reads as a thin bright band, like the ref
+    ridge = np.clip((f01 - 0.52) / 0.48, 0.0, 1.0) ** 2
+
+    # --- displace along the surface normal, then project with perspective ---
+    radius = min(w, h) * 0.30 * (1.0 + 0.10 * bass)
+    disp = 1.0 + amp * field
+    fov = 3.2
+    persp = fov / (fov - z * disp)
+    sx = (cx + x * disp * radius * persp).astype(np.int32)
+    sy = (cy - y * disp * radius * persp).astype(np.int32)
+
+    # depth fade: points near the silhouette are dimmer
+    depth = np.clip(0.30 + 0.70 * (z * 0.5 + 0.5), 0.0, 1.0)
+    # the dark field is faint, the crest is hot -> black interior, gold ribbons
+    lum = (0.05 + 1.55 * ridge) * depth
+
+    cr = (120 + 135 * ridge) * lum
+    cg = (88 + 150 * ridge) * lum
+    cb = (10 + 24 * ridge) * lum
+
+    buf = np.zeros((h, w, 3), dtype=np.float32)
+
+    # pass 1: the whole point cloud, single pixel dots
+    _blend_splats(buf, sx, sy, cr, cg, cb, w, h, offsets=((0, 0),))
+    # pass 2: bright ridge points, 3x3 so the membrane reads as a glowing band
+    hi = ridge > 0.30
+    if hi.any():
+        _blend_splats(buf, sx[hi], sy[hi],
+                      cr[hi] * 0.75, cg[hi] * 0.75, cb[hi] * 0.75, w, h,
+                      offsets=((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
+                               (1, 1), (-1, -1), (1, -1), (-1, 1)))
+
+    img = np.clip(buf, 0, 255).astype(np.uint8)
+    surf = pygame.surfarray.make_surface(np.transpose(img, (1, 0, 2)))
+    screen.blit(surf, (0, 0))
+
+    # faint rim so the sphere silhouette is readable against a dark background,
+    # without washing out the point cloud
+    rim = pygame.Surface((w, h), pygame.SRCALPHA)
+    gcol = neon_color((t * 0.05) % 1.0, sat=0.9, val=1.0)
+    pygame.draw.circle(rim, (*gcol, 30), (cx, cy), int(radius * 1.03), 2)
+    pygame.draw.circle(rim, (*gcol, 16), (cx, cy), int(radius * 1.10), 1)
+    screen.blit(rim, (0, 0))
+
+
 def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata):
     mag = player.spectrum()
     cx, cy = w // 2, h // 2
@@ -273,106 +405,132 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata):
     base_y = h - 90
 
     if mode == "radial":
-        # NCS style "ball" visualizer
-        cx, cy = w // 2, h // 2
-        max_radius = min(w, h) * 0.22
-        # Use bass energy (first ~10 bins) for the ball's pulsation
-        bass = float(np.mean(mag[:10])) if len(mag) >= 10 else 0.0
-        ball_radius = max_radius * (0.35 + bass * 0.65)  # 35%-100% of max_radius
-        # Core color cycles slowly
-        core_hue = (t * 0.05) % 1.0
-        core_col = neon_color(core_hue)
-        # Outer glow layers
-        for glow in range(3):
-            glow_radius = ball_radius + 8 * (glow + 1)
-            glow_alpha = 60 - 20 * glow
-            glow_col = (*core_col, max(0, glow_alpha))
-            pygame.draw.circle(surf, glow_col, (cx, cy), int(glow_radius))
-        # Solid core
-        pygame.draw.circle(surf, (*core_col, 255), (cx, cy), int(ball_radius))
-        # Rays: one per frequency bin, length scaled by magnitude
-        num_rays = len(mag)
-        for i, m in enumerate(mag):
-            if m <= 0.01:  # skip near-zero bins
-                continue
-            ang = 2 * math.pi * i / num_rays - math.pi / 2  # start at top
-            hue_shift = i / num_rays  # spread hue around circle
-            ray_col = neon_color((core_hue + hue_shift * 0.3) % 1.0)
-            # inner start just outside the ball
-            start_r = ball_radius + 2
-            end_r = ball_radius + m * (max_radius - ball_radius) * 1.2
-            x0 = cx + math.cos(ang) * start_r
-            y0 = cy + math.sin(ang) * start_r
-            x1 = cx + math.cos(ang) * end_r
-            y1 = cy + math.sin(ang) * end_r
-            width = max(1, int(2 + m * 6))  # thicker for stronger bins
-            pygame.draw.line(surf, ray_col, (int(x0), int(y0)),
-                             (int(x1), int(y1)), width)
-            # add a tiny outer "glow" bloom by drawing a slightly wider, softer line underneath
-            if width > 2:
-                bloom_col = (*ray_col, 80)
-                pygame.draw.line(surf, bloom_col, (int(x0), int(y0)),
-                                 (int(x1), int(y1)), width + 4)
+        # The real NCS ball: 3D point-cloud sphere with a flowing gold membrane
+        draw_ncs_sphere(screen, player, w, h, t)
     elif mode == "disc":
-        # --- Rotating Disc Visualizer ---
-        disc_radius = min(w, h) * 0.3  # Size of the central disc
-        disc_color_hue = (t * 0.03) % 1.0
-        disc_color = neon_color(disc_color_hue, sat=0.8, val=0.7)
+        # --- Rotating Vinyl Disc Visualizer ---
+        disc_radius = int(min(w, h) * 0.28)
+        bass = float(np.mean(mag[:10])) if len(mag) >= 10 else 0.0
+        pulse_radius = disc_radius + int(bass * 14)
 
-        # Disc shadow/glow
-        for glow_step in range(3, 0, -1):
-            glow_color = (*disc_color, int(255 / (4 - glow_step) * 0.2))
-            pygame.draw.circle(surf, glow_color, (cx, cy), int(disc_radius + glow_step * 8))
+        # Subtle outer neon glow
+        core_col = neon_color((t * 0.05) % 1.0)
+        pygame.draw.circle(surf, (*core_col, 35), (cx, cy), pulse_radius + 12)
+        pygame.draw.circle(surf, (*core_col, 60), (cx, cy), pulse_radius + 6)
 
-        # Main disc
-        pygame.draw.circle(surf, disc_color, (cx, cy), int(disc_radius))
+        # Black vinyl body
+        pygame.draw.circle(surf, (16, 16, 18), (cx, cy), pulse_radius)
+        pygame.draw.circle(surf, (35, 35, 40), (cx, cy), pulse_radius, 2)
 
-        # Album Art Sticker
+        # Vinyl grooves
+        for gr in range(int(pulse_radius * 0.42), pulse_radius - 6, 7):
+            shade = 24 if (gr // 7) % 2 == 0 else 32
+            pygame.draw.circle(surf, (shade, shade, shade + 2), (cx, cy), gr, 1)
+
+        # Vinyl shine / highlight sheen
+        shine_angle = (t * 0.4) % (2 * math.pi)
+        for sa in (shine_angle, shine_angle + math.pi):
+            p1 = (cx + math.cos(sa - 0.2) * pulse_radius * 0.95, cy + math.sin(sa - 0.2) * pulse_radius * 0.95)
+            p2 = (cx + math.cos(sa + 0.2) * pulse_radius * 0.95, cy + math.sin(sa + 0.2) * pulse_radius * 0.95)
+            pygame.draw.polygon(surf, (255, 255, 255, 18), [(cx, cy), p1, p2])
+
+        # Center Album Art Sticker (Circular, rotating)
+        sticker_r = int(disc_radius * 0.36)
         art_path = current_track_metadata.get('art_path')
         if art_path and os.path.exists(art_path):
             try:
-                album_art = Image.open(art_path).convert("RGBA")
-                # Resize art to fit disc sticker area (e.g., 60% of disc radius)
-                sticker_radius = int(disc_radius * 0.6)
-                art_size = (sticker_radius * 2, sticker_radius * 2)
-                album_art = album_art.resize(art_size, Image.Resampling.LANCZOS)
+                art_img = Image.open(art_path).convert("RGBA")
+                sz = sticker_r * 2
+                art_img = art_img.resize((sz, sz), Image.Resampling.LANCZOS)
+                # Rotate image over time
+                rot_deg = -(t * 45) % 360
+                art_img = art_img.rotate(rot_deg, resample=Image.Resampling.BICUBIC)
+                
+                # Circular mask
+                mask = Image.new('L', (sz, sz), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, sz, sz), fill=255)
+                art_img.putalpha(mask)
+                
+                art_surf = pygame.image.frombytes(art_img.tobytes(), art_img.size, "RGBA")
+                surf.blit(art_surf, art_surf.get_rect(center=(cx, cy)))
+            except Exception:
+                pygame.draw.circle(surf, (50, 50, 60), (cx, cy), sticker_r)
+        else:
+            pygame.draw.circle(surf, (45, 45, 55), (cx, cy), sticker_r)
+            pygame.draw.circle(surf, core_col, (cx, cy), sticker_r, 2)
 
-                # Create a circular mask for the album art
-                mask = Image.new('L', art_size, 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.ellipse((0, 0, art_size[0], art_size[1]), fill=255)
-                album_art.putalpha(mask)
+        # Center spindle hole
+        pygame.draw.circle(surf, (10, 10, 14), (cx, cy), max(3, int(sticker_r * 0.16)))
+        pygame.draw.circle(surf, (80, 80, 90), (cx, cy), max(3, int(sticker_r * 0.16)), 1)
 
-                # Convert PIL Image to Pygame Surface
-                album_art_pg = pygame.image.fromstring(album_art.tobytes(), album_art.size, album_art.mode)
-
-                # Position the sticker in the center of the disc
-                art_rect = album_art_pg.get_rect(center=(cx, cy))
-                surf.blit(album_art_pg, art_rect)
-
-            except Exception as e:
-                print(f"Error loading album art {art_path}: {e}")
-
-        # Radial bars (same as original 'radial' but centered on disc edge)
+        # Reactive radial sound rays around vinyl edge
         num_rays = len(mag)
-        ray_start_radius = disc_radius + 10  # Start rays just outside the disc
-        max_ray_length = min(w, h) * 0.15
+        ray_start = pulse_radius + 4
+        max_ray = min(w, h) * 0.14
         for i, m in enumerate(mag):
-            if m <= 0.01: continue
+            if m <= 0.01:
+                continue
             ang = 2 * math.pi * i / num_rays - math.pi / 2
-            ray_col = neon_color(i / num_rays + t * 0.08) # Slightly different hue shift
+            ray_col = neon_color(i / num_rays + t * 0.08)
+            sx = cx + math.cos(ang) * ray_start
+            sy = cy + math.sin(ang) * ray_start
+            ex = cx + math.cos(ang) * (ray_start + m * max_ray)
+            ey = cy + math.sin(ang) * (ray_start + m * max_ray)
+            rw = max(1, int(1 + m * 4))
+            pygame.draw.line(surf, ray_col, (int(sx), int(sy)), (int(ex), int(ey)), rw)
+            if rw > 1:
+                pygame.draw.line(surf, (*ray_col, 60), (int(sx), int(sy)), (int(ex), int(ey)), rw + 2)
 
-            start_x = cx + math.cos(ang) * ray_start_radius
-            start_y = cy + math.sin(ang) * ray_start_radius
-            end_x = cx + math.cos(ang) * (ray_start_radius + m * max_ray_length)
-            end_y = cy + math.sin(ang) * (ray_start_radius + m * max_ray_length)
+    elif mode == "album":
+        # --- Normal boring square album cover mode ---
+        box_size = int(min(w, h) * 0.48)
+        bass = float(np.mean(mag[:10])) if len(mag) >= 10 else 0.0
+        pulse_box = box_size + int(bass * 12)
+        art_path = current_track_metadata.get('art_path')
+        
+        # Outer glow & shadow
+        glow_col = neon_color((t * 0.05) % 1.0)
+        glow_rect = pygame.Rect(0, 0, pulse_box + 16, pulse_box + 16)
+        glow_rect.center = (cx, cy)
+        pygame.draw.rect(surf, (*glow_col, 50), glow_rect, border_radius=10)
+        
+        if art_path and os.path.exists(art_path):
+            try:
+                art_img = Image.open(art_path).convert("RGBA")
+                art_img = art_img.resize((pulse_box, pulse_box), Image.Resampling.LANCZOS)
+                art_surf = pygame.image.frombytes(art_img.tobytes(), art_img.size, "RGBA")
+                surf.blit(art_surf, art_surf.get_rect(center=(cx, cy)))
+                # Sleek border
+                border_rect = pygame.Rect(0, 0, pulse_box, pulse_box)
+                border_rect.center = (cx, cy)
+                pygame.draw.rect(surf, (255, 255, 255, 80), border_rect, 2, border_radius=4)
+            except Exception:
+                box_rect = pygame.Rect(0, 0, pulse_box, pulse_box)
+                box_rect.center = (cx, cy)
+                pygame.draw.rect(surf, (20, 22, 30), box_rect, border_radius=6)
+                pygame.draw.rect(surf, glow_col, box_rect, 2, border_radius=6)
+        else:
+            box_rect = pygame.Rect(0, 0, pulse_box, pulse_box)
+            box_rect.center = (cx, cy)
+            pygame.draw.rect(surf, (20, 22, 30), box_rect, border_radius=6)
+            pygame.draw.rect(surf, glow_col, box_rect, 2, border_radius=6)
+            # Default music note / placeholder text inside box
+            ph_font = pygame.font.SysFont("consolas,menlo,dejavusansmono", 18, bold=True)
+            txt = ph_font.render("NO ALBUM ART", True, (120, 130, 150))
+            surf.blit(txt, txt.get_rect(center=(cx, cy)))
 
-            width = max(1, int(1 + m * 4))
-            pygame.draw.line(surf, ray_col, (int(start_x), int(start_y)), (int(end_x), int(end_y)), width)
-            # Add a soft bloom
-            if width > 1:
-                bloom_col = (*ray_col, 60)
-                pygame.draw.line(surf, bloom_col, (int(start_x), int(start_y)), (int(end_x), int(end_y)), width + 2)
+        # Bottom audio visualizer mini-bar right beneath the square album
+        avail_w = int(pulse_box * 0.95)
+        num_m_bars = 24
+        bar_w = max(2, avail_w // num_m_bars - 2)
+        start_bx = cx - (num_m_bars * (bar_w + 2)) // 2
+        by = cy + pulse_box // 2 + 18
+        for i in range(num_m_bars):
+            m = mag[i % len(mag)]
+            bh = max(3, int(m * 30))
+            b_col = neon_color(i / num_m_bars + t * 0.08)
+            pygame.draw.rect(surf, b_col, (start_bx + i * (bar_w + 2), by, bar_w, bh), border_radius=2)
+
     else:
         avail_w = min(w * 0.68, 1200)
         smooth_w = max(3, int((avail_w / NUM_BARS) * 0.72))
@@ -394,7 +552,8 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata):
                 surf.blit(fade, rect_m.topleft)
             x += smooth_w + gap
 
-    screen.blit(surf, (0, 0))
+        # "radial" (the NCS sphere) already painted itself onto screen
+        screen.blit(surf, (0, 0))
 
 
 def draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
@@ -406,6 +565,12 @@ def draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
         name = os.path.splitext(os.path.basename(player.track_path))[0]
         state = "PAUSED" if player.paused else "NOW PLAYING"
         label = f"{state}  ▸ {name}"
+        # stop the label before it collides with the time readout
+        max_label_w = max(80, w - 300)
+        while font.size(label)[0] > max_label_w and len(label) > 8:
+            label = label[:-1]
+        if label != f"{state}  ▸ {name}":
+            label = label[:-1] + "…"
         txt = font.render(label, True, (255, 255, 255))
         screen.blit(txt, (40, h - 60))
         dur, pos = player.duration(), player.position()
@@ -434,7 +599,8 @@ def draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
     max_visible_rows = max(1, (h - 170) // 26)
     num_shown = min(len(tracks), max_visible_rows)
     panel_h = max(60, 60 + num_shown * 26)
-    panel = pygame.Surface((340, panel_h), pygame.SRCALPHA)
+    panel_w = 340
+    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 18, 150))
     pygame.draw.rect(panel, (255, 255, 255, 25), panel.get_rect(), 1)
     screen.blit(panel, (24, 24))
@@ -445,18 +611,24 @@ def draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
     for row_i, ti in enumerate(range(visible_start,
                                      min(visible_start + max_visible_rows, len(tracks)))):
         name = os.path.splitext(os.path.basename(tracks[ti]['path']))[0]
-        name = name if len(name) <= 38 else name[:37] + "…"
+        # Clip row text so it never overflows the menu panel
+        row_rect = pygame.Rect(34, 62 + row_i * 26, 320, 22)
         if ti == selected:
-            pygame.draw.rect(screen, (0, 220, 180),
-                             (34, 62 + row_i * 26, 320, 22), border_radius=4)
+            pygame.draw.rect(screen, (0, 220, 180), row_rect, border_radius=4)
             col = (10, 14, 18)
         elif hover_idx is not None and ti == hover_idx:
-            pygame.draw.rect(screen, (40, 50, 70),
-                             (34, 62 + row_i * 26, 320, 22), border_radius=4)
+            pygame.draw.rect(screen, (40, 50, 70), row_rect, border_radius=4)
             col = (255, 255, 255)
         else:
             col = (235, 235, 245)
-        screen.blit(font.render(name, True, col), (44, 66 + row_i * 26))
+
+        max_text_w = row_rect.width - 20
+        txt_surf = font.render(name, True, col)
+        if txt_surf.get_width() > max_text_w:
+            while len(name) > 3 and font.size(name + "…")[0] > max_text_w:
+                name = name[:-1]
+            txt_surf = font.render(name + "…", True, col)
+        screen.blit(txt_surf, (44, 66 + row_i * 26))
 
 
 def extract_metadata_and_art(file_path):
@@ -578,6 +750,201 @@ def pick_folder_dialog(current):
     return None
 
 
+# --------------------------------------------------------------------------
+# Interactive Hermes chat panel
+# --------------------------------------------------------------------------
+HERMES_BIN = os.path.expanduser("~/.local/bin/hermes")
+if not os.path.exists(HERMES_BIN):
+    HERMES_BIN = shutil.which("hermes") or "hermes"
+
+
+def wrap_text(font, text, max_w):
+    """Greedy word wrap; falls back to hard char wrapping for long tokens."""
+    words = text.split()
+    if not words:
+        return [""]
+    lines, cur = [], ""
+    for word in words:
+        if font.size(word)[0] > max_w:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            chunk = ""
+            for ch in word:
+                if font.size(chunk + ch)[0] > max_w and chunk:
+                    lines.append(chunk)
+                    chunk = ch
+                else:
+                    chunk += ch
+            cur = chunk
+            continue
+        trial = word if not cur else cur + " " + word
+        if font.size(trial)[0] <= max_w:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+class HermesChat:
+    """A text-input panel that runs `hermes -z` on a worker thread.
+
+    Rendering and input happen on the main pygame thread; the subprocess runs
+    in the background and posts its reply back through a queue.
+    """
+
+    def __init__(self, font, rect):
+        self.font = font
+        self.rect = rect
+        self.messages = []          # list of (role, text)
+        self.input_buf = ""
+        self.caret_on = True
+        self.scroll = 0             # index of first visible wrapped line
+        self.busy = False
+        self._queue = queue.Queue()
+        self._thread = None
+        self.add("hermes", "Hi — I'm Hermes. Ask me about your library, "
+                          "the visualizers, or controls. Enter sends, "
+                          "Esc closes.")
+
+    def add(self, role, text):
+        self.messages.append((role, text))
+
+    def submit(self, context):
+        prompt = self.input_buf.strip()
+        if not prompt or self.busy:
+            return
+        self.add("you", prompt)
+        self.input_buf = ""
+        self.scroll = 10 ** 9
+        self.busy = True
+        self._thread = threading.Thread(
+            target=self._worker, args=(prompt, context), daemon=True)
+        self._thread.start()
+
+    def _worker(self, prompt, context):
+        full = context + "\n\n" + prompt if context else prompt
+        try:
+            r = subprocess.run([HERMES_BIN, "-z", full],
+                               capture_output=True, text=True, timeout=300)
+            out = (r.stdout or "").strip()
+            if not out:
+                err = (r.stderr or "").strip()
+                out = err if err else "(no response from hermes)"
+        except subprocess.TimeoutExpired:
+            out = "(hermes timed out after 300s)"
+        except FileNotFoundError:
+            out = (f"(hermes not found at {HERMES_BIN} — "
+                   "install it or add it to PATH)")
+        except Exception as e:
+            out = f"(hermes error: {e})"
+        self._queue.put(out)
+
+    def poll(self):
+        """Drain finished replies; returns True if one landed this frame."""
+        got = False
+        while True:
+            try:
+                reply = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self.add("hermes", reply)
+            self.scroll = 10 ** 9
+            self.busy = False
+            got = True
+        return got
+
+    def handle_key(self, event):
+        if event.key == pygame.K_ESCAPE:
+            return "close"
+        if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+            self.submit(self.context)
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            self.input_buf = self.input_buf[:-1]
+            return None
+        if event.key == pygame.K_UP:
+            self.scroll = max(0, self.scroll - 1)
+            return None
+        if event.key == pygame.K_DOWN:
+            self.scroll += 1
+            return None
+        if event.key == pygame.K_PAGEUP:
+            self.scroll = max(0, self.scroll - 6)
+            return None
+        if event.key == pygame.K_PAGEDOWN:
+            self.scroll += 6
+            return None
+        if event.unicode and event.unicode.isprintable():
+            self.input_buf += event.unicode
+        return None
+
+    def draw(self, screen, t, w, h):
+        self.context = getattr(self, "context", "")
+        r = self.rect
+        pad = 18
+        max_w = r.width - pad * 2
+        inner_w = max(60, max_w)
+
+        panel = pygame.Surface((r.width, r.height), pygame.SRCALPHA)
+        panel.fill((8, 10, 16, 242))
+        pygame.draw.rect(panel, (0, 230, 190, 150), panel.get_rect(), 2)
+        screen.blit(panel, r.topleft)
+
+        # header
+        head = self.font.render("HERMES  ·  interactive", True, (0, 230, 190))
+        screen.blit(head, (r.x + pad, r.y + 12))
+        state = "thinking..." if self.busy else "ready"
+        scol = (255, 200, 90) if self.busy else (140, 145, 160)
+        stxt = self.font.render(state, True, scol)
+        screen.blit(stxt, (r.x + r.width - pad - stxt.get_width(), r.y + 12))
+        pygame.draw.line(screen, (255, 255, 255, 30),
+                         (r.x + pad, r.y + 36), (r.x + r.width - pad, r.y + 36))
+
+        # wrap all messages into a flat list of (text, colour, is_user)
+        wrapped = []
+        for role, text in self.messages:
+            colour = (235, 235, 245) if role == "you" else (170, 235, 220)
+            prefix = "› " if role == "you" else ""
+            for i, line in enumerate(wrap_text(self.font, text, inner_w)):
+                wrapped.append(((prefix if i == 0 else "  ") + line, colour))
+
+        # input box height reserved at the bottom
+        box_h = 40
+        view_top = r.y + 44
+        view_bottom = r.y + r.height - box_h - 22
+        line_h = self.font.get_linesize()
+        max_rows = max(1, (view_bottom - view_top) // line_h)
+
+        self.scroll = max(0, min(self.scroll, max(0, len(wrapped) - 1)))
+        start = min(self.scroll, max(0, len(wrapped) - max_rows))
+        for i, (line, colour) in enumerate(wrapped[start:start + max_rows]):
+            screen.blit(self.font.render(line, True, colour),
+                        (r.x + pad, view_top + i * line_h))
+
+        if len(wrapped) > max_rows:
+            more = self.font.render(
+                f"  ({len(wrapped) - start - max_rows} more lines, "
+                "↑↓ to scroll)", True, (110, 115, 130))
+            screen.blit(more, (r.x + pad, view_bottom + 2))
+
+        # input box
+        box = pygame.Rect(r.x + pad, r.y + r.height - box_h - 8,
+                          max_w, box_h - 8)
+        pygame.draw.rect(screen, (24, 28, 40), box, border_radius=6)
+        pygame.draw.rect(screen, (0, 230, 190, 110), box, 1, border_radius=6)
+        # keep the caret visible by scrolling the input left when it overflows
+        shown = self.input_buf
+        while self.font.size(shown)[0] > box.width - 40 and shown:
+            shown = shown[1:]
+        caret = "▌" if (self.caret_on and int(t * 2) % 2 == 0) else " "
+        screen.blit(self.font.render(shown + caret, True, (255, 255, 255)),
+                    (box.x + 10, box.y + 8))
+
+
 def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
     ow, oh = 700, 240
     ox, oy = (w - ow) // 2, (h - oh) // 2 - 50
@@ -633,8 +1000,10 @@ def main():
     for joystick in joysticks:
         joystick.init()
     w, h = 1280, 720
+    MIN_W, MIN_H = 640, 480
     screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
     pygame.display.set_caption("NCS Music Launcher")
+    flags = pygame.RESIZABLE
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas,menlo,dejavusansmono", 17, bold=True)
     font_big = pygame.font.SysFont("consolas,menlo,dejavusansmono", 28, bold=True)
@@ -664,9 +1033,13 @@ def main():
     hover_idx = None
     base_y = h - 90
 
+    chat_open = False
+    chat_panel = HermesChat(font, pygame.Rect(0, 0, w, h))
+
     def render_hint():
         return font.render("↑↓ select  ⏎ play  space pause  ←→ seek  "
-                           "F visual  T torrent  O folder  M mute  Q quit",
+                           "F visual  C hermes  T torrent  O folder  "
+                           "M mute  Q quit",
                            True, (120, 120, 130))
 
     hint_surf = render_hint()
@@ -724,7 +1097,25 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.VIDEORESIZE:
+                # real resize support: clamp to a usable minimum, then re-derive
+                # every layout value that used to be baked in at startup
+                nw = max(MIN_W, event.w)
+                nh = max(MIN_H, event.h)
+                screen = pygame.display.set_mode((nw, nh), pygame.RESIZABLE)
+                w, h = screen.get_size()
+                base_y = h - 90
+                hint_surf = render_hint()
+                hint_w = hint_surf.get_width()
+                if chat_open:
+                    chat_panel.rect = pygame.Rect(0, 0, w, h)
+                push_notice(("info", f"resized to {w}x{h}"))
             elif event.type == pygame.KEYDOWN:
+                if chat_open:
+                    # the chat panel owns every key while it is open
+                    if chat_panel.handle_key(event) == "close":
+                        chat_open = False
+                    continue
                 if overlay_open:
                     if event.key == pygame.K_ESCAPE:
                         overlay_open = False
@@ -788,6 +1179,10 @@ def main():
                     player.muted = muted
                 elif event.key == pygame.K_f:
                     vis_mode_idx = (vis_mode_idx + 1) % len(modes)
+                elif event.key == pygame.K_c:
+                    chat_open = not chat_open
+                    if chat_open:
+                        pygame.key.start_text_input()
                 elif event.key == pygame.K_EQUALS or event.key == pygame.K_KP_PLUS:
                     pass  # volume up not implemented
                 elif event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
@@ -937,6 +1332,22 @@ def main():
         draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
                 folder, hover_idx)
 
+        # Draw the interactive Hermes chat on top when it is open
+        if chat_open:
+            cur = tracks[selected] if tracks else {}
+            cur_title = cur.get('title') or "nothing"
+            cur_artist = cur.get('artist') or "unknown artist"
+            chat_panel.context = (
+                "You are embedded in the NCS Music Launcher, a pygame music "
+                "player. Current track: "
+                f"'{cur_title}' by {cur_artist}. "
+                f"State: {'paused' if player.paused else 'playing'}, "
+                f"visualizer mode: {modes[vis_mode_idx]}, "
+                f"{len(tracks)} track(s) in the library at {folder}."
+            )
+            chat_panel.poll()
+            chat_panel.draw(screen, t, w, h)
+
         # Draw torrent overlay
         if torrents:
             statuses = torrents.status_lines()
@@ -947,7 +1358,14 @@ def main():
 
         # Draw hint
         hint_surf = render_hint()
-        screen.blit(hint_surf, (w - hint_w - 24, h - 24))
+        hx, hy = w - hint_w - 24, h - 24
+        if hx < 24:                       # too narrow for the full hint
+            hx = 24
+            short = font.render("↑↓ ⏎ space ←→ F C T O M Q", True,
+                                (120, 120, 130))
+            screen.blit(short, (24, hy))
+        else:
+            screen.blit(hint_surf, (hx, hy))
 
         pygame.display.flip()
         clock.tick(60)

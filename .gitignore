@@ -117,3 +117,5 @@ torrent-downloads/
 # Android build outputs (optional, if you want to ignore them)
 android/app/build/
 android/.gradle/
+# Local test scratch
+tests/__pycache__/
