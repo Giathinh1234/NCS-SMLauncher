@@ -923,6 +923,14 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
 
 
 def main():
+    # --version must work before anything is created, and must read the same
+    # VERSION the updater compares against, so a frozen build that lost its
+    # bundled VERSION file is visible here rather than silently reporting 0.0.0.
+    if "--version" in sys.argv[1:]:
+        import version as _v
+        print(f"HashPlay {_v.APP_VERSION}")
+        return
+
     folder = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Music")
     folders = [folder]
     os.makedirs(TORRENT_DIR, exist_ok=True)
