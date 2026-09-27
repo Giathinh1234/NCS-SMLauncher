@@ -1,0 +1,64 @@
+name: Build
+
+# Tags are the release trigger: pushing v* is what turns a green build into
+# an asset on a GitHub release that the in-app updater can then find.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Build the .app bundle
+        run: ./build_macos_app.sh
+      - name: Zip the bundle
+        run: cd dist && zip -qry HashPlay.app.zip HashPlay.app
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: HashPlay-macos-arm64
+          path: |
+            dist/HashPlay
+            dist/HashPlay.app
+
+  linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 portaudio19-dev
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build the single-file executable
+        run: ./scripts/build_linux.sh
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: HashPlay-linux-x86_64
+          path: |
+            dist/HashPlay
+            dist/*.tar.gz

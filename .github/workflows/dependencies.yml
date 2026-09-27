@@ -1,0 +1,83 @@
+name: Dependencies
+
+# Weekly, Monday 07:00 UTC. Opens ONE issue listing stale packages; the issue
+# title is the dedup key, so re-runs update nothing rather than piling up.
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  outdated:
+    name: Check for outdated dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Collect outdated packages
+        run: |
+          pip list --outdated --format=json > outdated.json || echo "[]" > outdated.json
+          cat outdated.json
+      - name: Open or update the tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const TITLE = 'Dependency update available';
+
+            let packages = [];
+            try {
+              packages = JSON.parse(fs.readFileSync('outdated.json', 'utf8'));
+            } catch (err) {
+              core.warning('could not parse outdated.json: ' + err.message);
+              packages = [];
+            }
+            if (!Array.isArray(packages)) packages = [];
+            if (packages.length === 0) {
+              core.info('Everything is current.');
+              return;
+            }
+
+            // One issue, ever. If it already exists, leave it alone.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const dupe = existing.data.find(i => i.title === TITLE);
+            if (dupe) {
+              core.info('Tracking issue already open: ' + dupe.html_url);
+              return;
+            }
+
+            const rows = packages
+              .map(p => `| \`${p.name}\` | ${p.version} | ${p.latest_version} |`)
+              .join('\n');
+            const body = [
+              'Automated check of `' + context.workflow + '`.',
+              '',
+              '| Package | Pinned | Latest |',
+              '| --- | --- | --- |',
+              rows,
+              '',
+              '_This issue is managed by `.github/workflows/dependencies.yml`._',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: TITLE,
+              body,
+            });
+            core.info('Opened tracking issue with ' + packages.length + ' stale packages.');
