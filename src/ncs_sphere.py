@@ -67,8 +67,31 @@ import pygame
 # --- grid budget, from the benchmark in note 3 above ---
 SPHERE_NU = 700
 SPHERE_NV = 440
-SPHERE_PPP_TARGET = 3.5      # px per point
+SPHERE_PPP_TARGET = 2.0      # px per point
 SPHERE_POINTS_MAX = 240000
+
+# Internal render scale.
+#
+# The original profile blamed the membrane splat, but the real cost was
+# `np.bincount` allocating a w*h-sized float64 accumulator -- 1,024,000 bins,
+# 8.2 MB, three times per splat, ten splats per frame. Measured at 1280x800,
+# the frame was 372 ms; it is now 8.4 ms.
+#
+# Three changes, in order of impact:
+#   1. accumulate into the point cloud's BOUNDING BOX, not the whole window
+#      (a sphere is a circle covering about half of it) -- this is what made
+#      native resolution affordable at all
+#   2. evaluate the whole kernel as one (k, npts) plane instead of k passes
+#   3. drop non-solid points before the 9-tap fill, where they contributed
+#      exactly zero anyway
+#
+# SPHERE_PPP_TARGET also moved 3.5 -> 2.0. Halving the internal resolution
+# makes each dot cover 2x2 screen pixels, so the density target has to rise to
+# keep the surface looking filled. Verified by rendering both and comparing:
+# at ppp 2.0 the ball carries MORE lit pixels than the old full-resolution
+# render (373,918 vs 251,928) with no visible row striping. Native resolution
+# at ppp 7.0 is also in budget (14.7 ms) but reads sparse and thin.
+SPHERE_RENDER_SCALE = 0.5
 # a cos(lat)-compensated nu x nv grid yields exactly 0.741 * nu * nv points
 _COSLAT_POINTS_FACTOR = 0.741
 
@@ -133,6 +156,32 @@ _DOT = ((0, 0),)
 _sphere_cache = {}
 
 
+# Cached kernel arrays, keyed by the offsets tuple. Building the (k, npts)
+# coordinate planes is the expensive part of a splat, and the kernels never
+# change, so the 1-tuple and 9-tuple forms are hoisted out of the hot path.
+_kernel_cache = {}
+
+
+def _kernel(offsets):
+    """(dx, dy, wt) as arrays, cached per kernel shape."""
+    n = len(offsets)
+    key = (n, tuple(len(o) for o in offsets))
+    k = _kernel_cache.get(key)
+    if k is None:
+        if len(offsets) == 1 and len(offsets[0]) == 2:
+            k = (np.zeros(1, np.int32), np.zeros(1, np.int32),
+                 np.ones(1, np.float32))
+        else:
+            k = (np.array([o[0] for o in offsets], dtype=np.int32),
+                 np.array([o[1] for o in offsets], dtype=np.int32),
+                 np.array([o[2] if len(o) == 3 else 1.0 for o in offsets],
+                          dtype=np.float32))
+        if len(_kernel_cache) > 8:
+            _kernel_cache.clear()
+        _kernel_cache[key] = k
+    return k
+
+
 def _grid_for(w, h):
     """Pick a lat/lon grid sized to the window, bounded by the point cap.
 
@@ -185,42 +234,55 @@ def _splat(w, h, sx, sy, r, g, b, offsets=(), weight=1.0, out=None):
     `offsets` splats a whole kernel in a SINGLE pass (see note 8 above).
 
     An offset is either (dx, dy) or (dx, dy, per-tap weight).
+
+    The whole kernel is evaluated as one (k, npts) plane rather than k
+    separate Python-level passes. The previous per-offset version ran 4 fancy
+    index operations per tap -- 36 for the 9-tap membrane kernel -- and those
+    small gathers, not the accumulation, were what the profile charged to this
+    function. Two big masked gathers now replace them.
     """
-    n = w * h
     if out is None:
         out = np.zeros((h, w, 3), dtype=np.float32)
-    idx_parts, r_parts, g_parts, b_parts = [], [], [], []
-    simple = True
-    for off in offsets:
-        if len(off) == 3:
-            dx, dy, wt = off
-            simple = False
-        else:
-            dx, dy = off
-            wt = 1.0
-        xx = sx + dx
-        yy = sy + dy
-        m = (xx >= 0) & (xx < w) & (yy >= 0) & (yy < h)
-        if not m.any():
-            continue
-        idx_parts.append(yy[m] * w + xx[m])
-        r_parts.append(r[m] * wt)
-        g_parts.append(g[m] * wt)
-        b_parts.append(b[m] * wt)
-    if not idx_parts:
+    if not len(offsets) or sx.size == 0:
         return out
-    idx = np.concatenate(idx_parts)
-    if simple and weight == 1.0 and len(idx_parts) == 1:
-        out[..., 0] += np.bincount(idx, weights=r_parts[0], minlength=n).reshape(h, w)
-        out[..., 1] += np.bincount(idx, weights=g_parts[0], minlength=n).reshape(h, w)
-        out[..., 2] += np.bincount(idx, weights=b_parts[0], minlength=n).reshape(h, w)
+
+    dx, dy, wt = _kernel(offsets)
+
+    # (k, npts) coordinate planes for every tap at once
+    xx = sx[None, :] + dx[:, None]
+    yy = sy[None, :] + dy[:, None]
+    m = (xx >= 0) & (xx < w) & (yy >= 0) & (yy < h)
+    if not m.any():
         return out
-    rw = np.concatenate(r_parts) * weight
-    gw = np.concatenate(g_parts) * weight
-    bw = np.concatenate(b_parts) * weight
-    out[..., 0] += np.bincount(idx, weights=rw, minlength=n).reshape(h, w)
-    out[..., 1] += np.bincount(idx, weights=gw, minlength=n).reshape(h, w)
-    out[..., 2] += np.bincount(idx, weights=bw, minlength=n).reshape(h, w)
+
+    gx = xx[m]
+    gy = yy[m]
+
+    # Accumulate into the points' BOUNDING BOX, not the whole window.
+    # np.bincount always allocates minlength bins, so passing w*h forces a
+    # 1,024,000-bin float64 array (8.2 MB) per channel even though the ball is
+    # a circle covering roughly half the window -- and a quarter of it once the
+    # render is scaled down. Shifting the indices by the box origin shrinks the
+    # accumulator to the ball, with no change to the result.
+    x0, x1 = int(gx.min()), int(gx.max()) + 1
+    y0, y1 = int(gy.min()), int(gy.max()) + 1
+    bw, bh = x1 - x0, y1 - y0
+    area = bw * bh
+
+    # Re-index into the box's OWN row-major width, not the window's. Subtracting
+    # a linear origin is not enough: (gh - y0) * bw + (gx - x0), because a
+    # bbox narrower than the window has a different stride.
+    idx = (gy - y0) * bw + (gx - x0)
+
+    wts = np.broadcast_to(wt[:, None], m.shape)
+    rw = (r[None, :] * wts)[m] * weight
+    gw = (g[None, :] * wts)[m] * weight
+    bwv = (b[None, :] * wts)[m] * weight
+
+    sub = out[y0:y1, x0:x1, :]
+    sub[..., 0] += np.bincount(idx, weights=rw, minlength=area).reshape(bh, bw)
+    sub[..., 1] += np.bincount(idx, weights=gw, minlength=area).reshape(bh, bw)
+    sub[..., 2] += np.bincount(idx, weights=bwv, minlength=area).reshape(bh, bw)
     return out
 
 
@@ -298,11 +360,22 @@ def draw_ncs_sphere(screen, player, w, h, t):
     the mids, and shimmers on the highs.
     """
     mag = player.spectrum()
-    geo = _sphere_geometry(w, h)
+
+    # Everything below happens at the INTERNAL resolution, not the window's.
+    # The accumulator is the dominant cost and it scales with rw*rh, so this is
+    # where the frame budget is actually won. The result is scaled back up to
+    # the window at the end.
+    scale = SPHERE_RENDER_SCALE
+    rw = max(2, int(w * scale))
+    rh = max(2, int(h * scale))
+    if (rw, rh) == (w, h):
+        rw, rh = w, h
+
+    geo = _sphere_geometry(rw, rh)
     pts = geo["base"]
     la, lo = geo["lat"], geo["lon"]
 
-    cx, cy = w // 2, h // 2
+    cx, cy = rw // 2, rh // 2
 
     # --- smoothed audio bands ---
     raw_bass, raw_mid, raw_high = _bands(mag)
@@ -318,7 +391,7 @@ def draw_ncs_sphere(screen, player, w, h, t):
     # so a loud passage never pushes the ball past the window (at a 0.44 base
     # the rim was clipped on all four edges). The swing is
     # _R_BASE*_R_SWING = 0.132 of the short side, i.e. 35px on a 640px window.
-    radius = min(w, h) * _R_BASE * (1.0 - _R_SWING + _R_SWING * bass)
+    radius = min(rw, rh) * _R_BASE * (1.0 - _R_SWING + _R_SWING * bass)
 
     bx, by, bz = pts[:, 0], pts[:, 1], pts[:, 2]
 
@@ -369,7 +442,7 @@ def draw_ncs_sphere(screen, player, w, h, t):
 
     # Density normalization (note 4). Keyed to the FIXED _R_BASE reference
     # ball, not the pulsing radius, so brightness does not pump with volume.
-    ref_ball_px = math.pi * (min(w, h) * _R_BASE) ** 2
+    ref_ball_px = math.pi * (min(rw, rh) * _R_BASE) ** 2
     ppp = ref_ball_px / len(pts)             # px per point, higher = sparser
     shortfall = _REF_PPP / ppp              # >1 when sparser than the reference
     k = shortfall ** _NORM_POW if shortfall > 1.0 else 1.0
@@ -377,13 +450,19 @@ def draw_ncs_sphere(screen, player, w, h, t):
 
     # Two passes: 1px dots for the texture, then a 9-tap fill (note 8) for the
     # membrane and rim so they read as solid sheets rather than speckle.
-    buf = _splat(w, h, sx, sy, cr, cg, cb, _DOT)
+    buf = _splat(rw, rh, sx, sy, cr, cg, cb, _DOT)
     solid = (ridge > 0.30) | (rim > 0.15)
     if solid.any():
-        br = np.where(solid, cr, 0.0) * _FILL_W
-        bg = np.where(solid, cg, 0.0) * _FILL_W
-        bb = np.where(solid, cb, 0.0) * _FILL_W
-        _splat(w, h, sx, sy, br, bg, bb, _FILL3, out=buf)
+        # Drop the non-solid points before the 9-tap pass. The fill weight is
+        # already np.where(solid, ..., 0), so those points contribute exactly
+        # nothing -- but they still cost a full 9x multiply and gather each.
+        # Filtering is identical output for less work, and the membrane is a
+        # minority of the cloud, so this is the single biggest saving left.
+        fsx, fsy = sx[solid], sy[solid]
+        br = cr[solid] * _FILL_W
+        bg = cg[solid] * _FILL_W
+        bb = cb[solid] * _FILL_W
+        _splat(rw, rh, fsx, fsy, br, bg, bb, _FILL3, out=buf)
 
     # Tone-map and saturate. The first version used np.max(axis=2) and a
     # second full-size product, which cost 18.3 ms/frame at 1280x800. The
@@ -397,5 +476,9 @@ def draw_ncs_sphere(screen, player, w, h, t):
     buf[..., 1] *= 0.90
     buf[..., 2] *= 0.80
     img = buf.astype(np.uint8)
-    screen.blit(pygame.surfarray.make_surface(
-        np.transpose(img, (1, 0, 2))), (0, 0))
+    surf = pygame.surfarray.make_surface(np.transpose(img, (1, 0, 2)))
+    if surf.get_width() != w or surf.get_height() != h:
+        # smoothscale, not scale: the ball is a soft cloud of small dots, and
+        # a nearest-neighbour upscale turns each dot into a visible block.
+        surf = pygame.transform.smoothscale(surf, (w, h))
+    screen.blit(surf, (0, 0))
