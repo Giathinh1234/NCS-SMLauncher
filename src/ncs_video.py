@@ -357,3 +357,247 @@ def build_visual(path_or_url, box, allow_web=True, sync_to=None):
     visual.duration = duration
     visual.note = note
     return visual
+
+
+# A sidecar for an audio track, by extension preference. Ordered so the
+# smallest, most compatible container wins when several exist.
+SIDECAR_EXTENSIONS = (".mp4", ".m4v", ".webm", ".mkv", ".mov", ".avi", ".flv")
+SIDECAR_DIRS = ("", "videos", "video", ".video")
+
+
+def find_sidecar(audio_path):
+    """A video that belongs to `audio_path`, or None.
+
+    Looks for the same basename with a video extension, in the track's own
+    folder and in a conventional `videos/` subfolder. This is what makes the
+    feature usable without any configuration: drop `Song.mp4` next to
+    `Song.mp3` and the visual just appears.
+    """
+    if not audio_path:
+        return None
+    base = os.path.splitext(audio_path)[0]      # absolute, no extension
+    stem = os.path.basename(base)               # the name only
+    parent = os.path.dirname(audio_path)
+    if not parent:
+        parent = "."
+    for sub in SIDECAR_DIRS:
+        folder = os.path.join(parent, sub) if sub else parent
+        for ext in SIDECAR_EXTENSIONS:
+            # Build from the STEM, not from the absolute base, otherwise the
+            # candidate is already absolute and the subfolder is never joined.
+            candidate = os.path.join(folder, stem + ext)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+class VideoSlot:
+    """Owns at most one live video and paints it into the visual area.
+
+    The launcher's draw path calls `draw()` every frame. It never raises: any
+    failure turns the slot off and reports why, so the visualizer cycle can
+    fall back to another mode instead of taking the app down.
+    """
+
+    def __init__(self, allow_web=True, on_error=None):
+        self.allow_web = allow_web
+        self.on_error = on_error
+        self.visual = None
+        self.source = None
+        self.message = ""
+        self.enabled = False
+        self.frames_drawn = 0
+        self._want = None          # the source we would open next draw
+        self._last_track = None
+        self._seeked_to = -1.0
+        self._pinned = False       # an explicit user choice outranks sidecars
+        self._user_off = False     # the user pressed V to turn video off
+        self._source_size = (0, 0)  # probed (w, h) of the current source
+
+    # ---- state ---------------------------------------------------------
+    def is_active(self):
+        return self.visual is not None and not self.visual.eof
+
+    def close(self):
+        if self.visual is not None:
+            self.visual.close()
+        self.visual = None
+        self.enabled = False
+
+    def request(self, path_or_url, sync_to=None):
+        """Queue a source; it is opened on the next draw, not here.
+
+        Opening an ffmpeg pipe can block for a moment, and this is called from
+        a key handler, so the work is deferred to the draw path.
+        """
+        if not path_or_url:
+            self.close()
+            self.message = ""
+            return
+        self._want = (path_or_url, sync_to)
+        self.enabled = True
+
+    def clear(self, by_user=True):
+        self._want = None
+        self.close()
+        self.message = ""
+        if by_user:
+            self._user_off = True
+
+    def toggle(self, path_or_url=None, sync_to=None):
+        """V key: flip the video layer on or off.
+
+        Turning it on without a source is legal and useful -- it arms the slot
+        so the next track carrying a video picks it up automatically. The flip
+        keys off `enabled`, not `is_active`, so an armed-but-empty slot can
+        still be switched back off.
+        """
+        if self.enabled or self.is_active():
+            self.clear(by_user=True)
+            self.message = "video off"
+            return False
+        self._user_off = False
+        if path_or_url:
+            self.request(path_or_url, sync_to)
+        else:
+            # armed, waiting for follow_track() to supply a sidecar
+            self.enabled = True
+        self.message = "video on"
+        return True
+
+    # ---- per-frame -----------------------------------------------------
+    def _fail(self, text):
+        self.message = text
+        self.visual = None
+        self.enabled = False
+        self._want = None
+        # An automatic failure is NOT the user turning video off, so the slot
+        # must stay eligible to pick up a later track that does have a video.
+        self._user_off = False
+        if self.on_error:
+            self.on_error(text)
+        return False
+
+    def draw(self, screen, box, player=None):
+        """Paint one frame. Returns True when a video frame was drawn."""
+        if not self.enabled:
+            return False
+
+        # Open (or switch to) whatever was requested. A pending request must be
+        # honoured even while another video is live, otherwise following a new
+        # track silently keeps showing the previous track's video.
+        if self._want is not None:
+            want, sync = self._want
+            self._want = None
+            if self.visual is not None:
+                self.visual.close()
+                self.visual = None
+            try:
+                self.visual = build_visual(want, box, allow_web=self.allow_web,
+                                            sync_to=sync)
+                self.source = want
+                self._seeked_to = -1.0
+                self._source_size = self._probed_size(want)
+                if getattr(self.visual, "note", ""):
+                    self.message = self.visual.note
+            except VideoError as e:
+                return self._fail(str(e))
+            except Exception as e:               # ffmpeg missing, bad args...
+                return self._fail(f"video failed: {e}")
+
+        if self.visual is None:
+            # Armed but nothing to show yet: stay on and wait for a sidecar
+            # rather than silently disarming ourselves.
+            return False
+
+        # A resized window means a differently sized frame. The target size is
+        # derived from the SOURCE aspect letterboxed into the box, not from the
+        # box alone -- comparing against the box would mismatch forever and
+        # rebuild the pipe on every single frame.
+        want_w, want_h = self._target_size(box)
+        if (self.visual.width, self.visual.height) != (want_w, want_h):
+            try:
+                self.visual.close()
+                self.visual = build_visual(self.source, box,
+                                           allow_web=self.allow_web)
+                self._seeked_to = -1.0
+            except VideoError as e:
+                return self._fail(str(e))
+
+        # Follow the playhead, but only when it has actually drifted, so a
+        # 30fps pipe is not restarted every frame.
+        if player is not None:
+            try:
+                pos = float(player.position())
+            except Exception:
+                pos = None
+            if pos is not None and abs(pos - self._seeked_to) > 1.0:
+                if getattr(self.visual, "duration", 0.0):
+                    wrapped = pos % self.visual.duration
+                else:
+                    wrapped = pos
+                try:
+                    self.visual.seek(wrapped)
+                    self._seeked_to = wrapped
+                except Exception:
+                    pass
+
+        result = self.visual.next_surface(box)
+        if result is None:
+            reason = "video ended" if self.visual.eof else "video stopped"
+            return self._fail(reason)
+
+        surf, rect = result
+        screen.blit(surf, rect.topleft)
+        self.frames_drawn += 1
+        return True
+
+    # ---- track awareness -----------------------------------------------
+    def follow_track(self, track_path, player=None, box=None):
+        """Point the slot at whatever video belongs to this track.
+
+        Skipped when the user has pinned their own source or explicitly turned
+        video off. A slot that merely FAILED on an earlier track is still
+        eligible, so a later track with a good video recovers on its own.
+        """
+        if self._pinned or self._user_off:
+            return False
+        sidecar = find_sidecar(track_path)
+        if not sidecar:
+            return False
+        if sidecar != self.source:
+            self.request(sidecar, None)
+        return True
+
+    def pin(self, path_or_url, sync_to=None):
+        """An explicit user choice; survives track changes."""
+        self._pinned = True
+        self.request(path_or_url, sync_to)
+
+    def unpin(self):
+        self._pinned = False
+
+    # ---- sizing helpers -------------------------------------------------
+    def _probed_size(self, want):
+        """(w, h) of the source itself, for the aspect ratio."""
+        try:
+            source, _note = resolve_source(want, allow_web=self.allow_web)
+            info = probe(source)
+        except Exception:
+            info = None
+        if info:
+            return info[0], info[1]
+        return 0, 0
+
+    def _target_size(self, box):
+        """The frame size build_visual would choose for this box."""
+        sw, sh = self._source_size
+        if sw <= 0 or sh <= 0:
+            return max(2, box.width), max(2, box.height)
+        _x, _y, w, h = fit_rect(sw, sh, max(2, box.width), max(2, box.height))
+        return max(1, w), max(1, h)
+
+
+def _slot_size(box):
+    _x, _y, w, h = fit_rect(box.width, box.height, box.width, box.height)
+    return w, h
