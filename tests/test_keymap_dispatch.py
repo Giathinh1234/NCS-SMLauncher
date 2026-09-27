@@ -15,6 +15,7 @@ presses the key.
 """
 import ast
 import os
+import re as _re
 import sys
 import tempfile
 
@@ -125,5 +126,54 @@ names = [a.name for n in tree_top for a in n.names]
 assert "settings_panel" not in names, \
     "settings_panel must not be a module-level import"
 print("   ok  no module-level settings_panel import")
+
+# ---- 7. the launcher calls SettingsPanel the way it is defined ----------
+print("7) the launcher's SettingsPanel calls match its real signature")
+try:
+    import inspect
+    import settings_panel as sp
+except ImportError:
+    print("   settings_panel.py not present yet; skipping signature check")
+    raise SystemExit(0)
+
+init = inspect.signature(sp.SettingsPanel.__init__)
+params = set(init.parameters)
+# keywords the launcher passes
+for kw in ("cfg", "keymap", "pick_folder", "font"):
+    assert kw in params, \
+        f"the launcher passes {kw}= to SettingsPanel but it is not a parameter"
+    print(f"   ok  SettingsPanel accepts {kw}=")
+
+draw = inspect.signature(sp.SettingsPanel.draw)
+dp = set(draw.parameters)
+for kw in ("screen", "font", "w", "h"):
+    assert kw in dp, f"draw() is missing the {kw} parameter"
+print("   ok  draw() takes screen, font, w, h")
+
+# The launcher passes w/h by keyword. If they were positional, w would land
+# in the `font` slot -- a silent, ugly failure, so pin it.
+src_calls = open(LAUNCHER).read()
+assert "settings_panel.draw(screen, w, h)" not in src_calls, \
+    "draw(screen, w, h) passes w as the font argument"
+assert "draw(screen, font=font, w=w, h=h)" in src_calls, \
+    "the launcher should pass w/h to draw() by keyword"
+print("   ok  w/h are passed to draw() by keyword, not positionally")
+
+# handle_key's documented return values must all lead to a save, either via
+# the close branch or the changed branch.
+doc = inspect.getdoc(sp.SettingsPanel.handle_key) or ""
+returns = {m.group(1) for m in _re.finditer(r'"([a-z]+)"', doc)}
+
+handled = set()
+handled |= set(_re.findall(r'verdict == "([a-z]+)"', src_calls))
+for chunk in _re.findall(r'verdict in \(([^)]*)\)', src_calls):
+    handled |= set(_re.findall(r'"([a-z]+)"', chunk))
+
+missing = returns - handled
+assert not missing, (
+    f"handle_key can return {sorted(returns)} but the launcher only reacts to "
+    f"{sorted(handled)}; a change would not be persisted")
+print(f"   ok  launcher reacts to every value handle_key can return "
+      f"({sorted(returns)})")
 
 print("KEYMAP / DISPATCH INTEGRATION PASSED")

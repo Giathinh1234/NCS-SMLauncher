@@ -1034,6 +1034,30 @@ def main():
     # Every user-rebindable key funnels through here. Keeping one table means
     # the keymap, the settings panel and the media keys all agree on what an
     # action does, and adding a binding never means editing the event chain.
+
+    def do_pick_folder():
+        """Choose a library folder, rescan, and remember the choice.
+
+        Shared by the O key and the settings panel's folder row, so both do
+        exactly the same thing.
+        """
+        nonlocal folder, selected
+        picked = pick_folder_dialog(folder)
+        if not (picked and os.path.isdir(picked)):
+            push_notice(("info", "folder picker cancelled"))
+            return False
+        folder = picked
+        folders[0] = folder
+        cfg["library_folder"] = folder
+        tracks.clear()
+        scan_library(folders, tracks)
+        selected = 0
+        if tracks:
+            player.load(tracks[0]['path'])
+        push_notice(("info", f"library: {folder}"))
+        save_settings()
+        return True
+
     def do_action(act, shifted=False):
         nonlocal selected, muted, vis_mode_idx, chat_open, settings_open
         nonlocal video_overlay_open, video_overlay_text, overlay_open, folder
@@ -1089,27 +1113,16 @@ def main():
             else:
                 push_notice(("error", "libtorrent is not available"), 5.0)
         elif act == "open_folder":
-            picked = pick_folder_dialog(folder)
-            if picked and os.path.isdir(picked):
-                folder = picked
-                folders[0] = folder
-                cfg["library_folder"] = folder
-                tracks.clear()
-                scan_library(folders, tracks)
-                selected = 0
-                if tracks:
-                    player.load(tracks[0]['path'])
-                push_notice(("info", f"library: {folder}"))
-                save_settings()
-            else:
-                push_notice(("info", "folder picker cancelled"))
+            do_pick_folder()
         elif act == "open_settings":
             settings_open = not settings_open
             if settings_open:
                 if settings_panel is None:
                     import settings_panel as sp
-                    settings_panel = sp.SettingsPanel(cfg, keymap, font)
+                    settings_panel = sp.SettingsPanel(
+                        cfg, keymap, pick_folder=do_pick_folder, font=font)
                 settings_panel.open()
+                settings_open = settings_panel.is_open()
         elif act == "quit":
             running = False
         else:
@@ -1181,8 +1194,9 @@ def main():
                     if verdict == "close":
                         settings_open = False
                         save_settings()
-                    elif verdict in ("rebound", "toggled", "changed"):
+                    elif verdict in ("rebind", "toggled", "changed"):
                         save_settings()
+                    settings_open = settings_panel.is_open()
                     continue
                 if chat_open:
                     # the chat panel owns every key while it is open
@@ -1472,7 +1486,7 @@ def main():
 
         # Settings sits on top of the video prompt: it is modal.
         if settings_open and settings_panel is not None:
-            settings_panel.draw(screen, w, h)
+            settings_panel.draw(screen, font=font, w=w, h=h)
 
         # Draw hint
         if show_hints:
