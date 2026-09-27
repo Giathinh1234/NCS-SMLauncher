@@ -8,6 +8,16 @@ infohash/magnet downloads, custom Canvas visualizer.
 
 Requires Android Studio (Hedgehog or newer) with SDK 34.
 
+`local.properties` holds your machine's SDK path and is **not** committed. If
+`./gradlew` stops with an "SDK location not found" error, create it once:
+
+```bash
+echo "sdk.dir=$ANDROID_HOME" > local.properties
+```
+
+The Gradle wrapper is pinned to **8.13** and verifies the distribution
+checksum, so no local Gradle install is needed.
+
 ```bash
 cd ncs-music-launcher/android
 ./gradlew assembleDebug

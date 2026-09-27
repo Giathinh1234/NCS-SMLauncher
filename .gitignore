@@ -117,5 +117,11 @@ torrent-downloads/
 # Android build outputs (optional, if you want to ignore them)
 android/app/build/
 android/.gradle/
+android/.kotlin/
+
+# Android machine-local SDK path — never commit this.
+# Gradle/AGP generates it per machine; Android Studio or
+# `echo "sdk.dir=$ANDROID_HOME" > android/local.properties` recreates it.
+android/local.properties
 # Local test scratch
 tests/__pycache__/

@@ -4,6 +4,41 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
 }
 
+// ---------------------------------------------------------------------------
+// App version — single source of truth is the repo-root VERSION file.
+//
+// The desktop build scripts and src/version.py read the same file, so the
+// Android app can never advertise a different version than the desktop build.
+// This block must stay *after* the `plugins {}` block: Gradle's Kotlin DSL
+// requires `plugins {}` to be the first block in a build script.
+//
+// versionName is the file contents verbatim (e.g. "1.0.0").
+// versionCode is derived as major * 10000 + minor * 100 + patch, which is
+// monotonically increasing for 0.0.0 <= version < 1.0.0 with minor,patch < 100
+// (e.g. 0.99 -> 9900, 1.0.0 -> 10000, 1.2.3 -> 10203). Google Play requires
+// only that versionCode strictly increase between uploads, so keeping minor and
+// patch below 100 preserves that ordering.
+// ---------------------------------------------------------------------------
+val versionFile = rootProject.file("../VERSION")
+check(versionFile.isFile) {
+    "VERSION file not found at ${versionFile.absolutePath}. " +
+        "It is the single source of truth for the app version and must be " +
+        "committed at the repo root."
+}
+val appVersionName = versionFile.readText().trim()
+check(appVersionName.isNotEmpty()) {
+    "VERSION file at ${versionFile.absolutePath} is empty. " +
+        "Put a version like '1.0.0' in it (major.minor.patch)."
+}
+val versionParts = appVersionName.split(".")
+check(versionParts.size == 3 && versionParts.all { it.isNotEmpty() && it.all(Char::isDigit) }) {
+    "VERSION file at ${versionFile.absolutePath} contains '$appVersionName', " +
+        "which is not a plain major.minor.patch triple. The Android build " +
+        "derives versionCode from those three integers and cannot continue."
+}
+val (versionMajor, versionMinor, versionPatch) = versionParts.map(String::toInt)
+val appVersionCode = versionMajor * 10_000 + versionMinor * 100 + versionPatch
+
 android {
     namespace = "com.giathinh.hashplay"
     compileSdk = 34
@@ -12,8 +47,8 @@ android {
         applicationId = "com.giathinh.hashplay"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildFeatures { compose = true }
