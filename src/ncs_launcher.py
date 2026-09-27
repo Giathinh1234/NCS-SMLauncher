@@ -52,6 +52,9 @@ import numpy as np
 from media_keys import MediaKeyTap, open_accessibility_settings
 from ncs_sphere import draw_ncs_sphere
 import ncs_video
+import config as appconfig
+import actions as appactions
+import migrations as appmigrations
 
 try:
     import sounddevice as sd
@@ -981,6 +984,28 @@ def main():
     chat_open = False
     chat_panel = HermesChat(font, pygame.Rect(0, 0, w, h))
 
+    # ---- settings, keymap, migrations ---------------------------------
+    # Load -> migrate -> merge, in that order: migrations must see the real
+    # stored shape before defaults fill in the gaps.
+    cfg = appconfig.load_config()
+    try:
+        cfg = appmigrations.migrate(cfg)
+    except Exception as exc:            # a bad file must not brick the app
+        push_notice(("error", f"settings ignored: {exc}"), 6.0)
+        cfg = appconfig.default_config()
+    keymap = appactions.Keymap(cfg.get("keymap") or {})
+    show_hints = bool(cfg.get("show_hints", True))
+    settings_open = False
+    settings_panel = None               # built lazily, needs the font
+
+    def save_settings():
+        """Persist the keymap. Never let a write failure kill the session."""
+        cfg["keymap"] = dict(keymap.bindings)
+        try:
+            appconfig.save_config(cfg)
+        except Exception as exc:
+            push_notice(("error", f"could not save settings: {exc}"), 5.0)
+
     def render_hint():
         return font.render("↑↓ select  ⏎ play  space pause  ←→ seek  "
                            "F visual  V video  C hermes  T torrent  "
@@ -996,6 +1021,91 @@ def main():
         notice_until = time.time() + duration
 
     nonlocal_selected = [selected]  # for media_key sync
+
+    # ---- action dispatch ------------------------------------------------
+    # Every user-rebindable key funnels through here. Keeping one table means
+    # the keymap, the settings panel and the media keys all agree on what an
+    # action does, and adding a binding never means editing the event chain.
+    def do_action(act, shifted=False):
+        nonlocal selected, muted, vis_mode_idx, chat_open, settings_open
+        nonlocal video_overlay_open, video_overlay_text, overlay_open, folder
+        nonlocal running
+        if act == "select_prev":
+            if tracks:
+                selected = (selected - 1) % len(tracks)
+                nonlocal_selected[0] = selected
+                player.load(tracks[selected]['path'])
+        elif act == "select_next":
+            if tracks:
+                selected = (selected + 1) % len(tracks)
+                nonlocal_selected[0] = selected
+                player.load(tracks[selected]['path'])
+        elif act == "play_pause":
+            if player.track_path:
+                player.toggle_pause()
+        elif act == "play":
+            if player.track_path and player.paused:
+                player.toggle_pause()
+        elif act == "seek_back":
+            if not player.paused and player.track_path:
+                player.seek(-5)
+        elif act == "seek_forward":
+            if not player.paused and player.track_path:
+                player.seek(5)
+        elif act == "toggle_mute":
+            muted = not muted
+            player.muted = muted
+        elif act == "cycle_visualizer":
+            vis_mode_idx = (vis_mode_idx + 1) % len(modes)
+        elif act == "open_hermes":
+            chat_open = not chat_open
+            if chat_open:
+                pygame.key.start_text_input()
+        elif act == "open_video":
+            # V toggles the layer off; Shift+V (or V with nothing playing)
+            # asks for an explicit path / .strm / URL.
+            if video_slot.is_active() and not shifted:
+                video_slot.clear(by_user=True)
+                push_notice(("info", "video off"))
+            elif ncs_video.have_ffmpeg():
+                video_overlay_open = True
+                video_overlay_text = ""
+                pygame.key.start_text_input()
+            else:
+                push_notice(("error", "ffmpeg is required for video "
+                                      "(brew install ffmpeg)"), 6.0)
+        elif act == "open_torrent":
+            if torrents is not None:
+                overlay_open = True
+                pygame.key.start_text_input()
+            else:
+                push_notice(("error", "libtorrent is not available"), 5.0)
+        elif act == "open_folder":
+            picked = pick_folder_dialog(folder)
+            if picked and os.path.isdir(picked):
+                folder = picked
+                folders[0] = folder
+                cfg["library_folder"] = folder
+                tracks.clear()
+                scan_library(folders, tracks)
+                selected = 0
+                if tracks:
+                    player.load(tracks[0]['path'])
+                push_notice(("info", f"library: {folder}"))
+                save_settings()
+            else:
+                push_notice(("info", "folder picker cancelled"))
+        elif act == "open_settings":
+            settings_open = not settings_open
+            if settings_open:
+                if settings_panel is None:
+                    import settings_panel as sp
+                    settings_panel = sp.SettingsPanel(cfg, keymap, font)
+                settings_panel.open()
+        elif act == "quit":
+            running = False
+        else:
+            push_notice(("info", f"unbound action: {act}"), 2.0)
 
     # Media key handling (macOS)
     def media_key_handler(action):
@@ -1056,6 +1166,16 @@ def main():
                     chat_panel.rect = pygame.Rect(0, 0, w, h)
                 push_notice(("info", f"resized to {w}x{h}"))
             elif event.type == pygame.KEYDOWN:
+                if settings_open and settings_panel is not None:
+                    # The panel owns every key while it is open, so a rebind
+                    # capture cannot be stolen by a normal binding.
+                    verdict = settings_panel.handle_key(event)
+                    if verdict == "close":
+                        settings_open = False
+                        save_settings()
+                    elif verdict in ("rebound", "toggled", "changed"):
+                        save_settings()
+                    continue
                 if chat_open:
                     # the chat panel owns every key while it is open
                     if chat_panel.handle_key(event) == "close":
@@ -1157,19 +1277,14 @@ def main():
                 elif event.key == pygame.K_RIGHT:
                     if not player.paused and player.track_path:
                         player.seek(5)
-                elif event.key == pygame.K_m:
-                    muted = not muted
-                    player.muted = muted
-                elif event.key == pygame.K_f:
-                    vis_mode_idx = (vis_mode_idx + 1) % len(modes)
-                elif event.key == pygame.K_c:
-                    chat_open = not chat_open
-                    if chat_open:
-                        pygame.key.start_text_input()
-                elif event.key == pygame.K_EQUALS or event.key == pygame.K_KP_PLUS:
-                    pass  # volume up not implemented
-                elif event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
-                    pass  # volume down not implemented
+                else:
+                    # Anything not claimed by an overlay goes through the
+                    # user keymap, so a rebind in settings takes effect here
+                    # without touching this chain. Structural keys (ESC,
+                    # RETURN in an overlay) are handled before this point.
+                    act = keymap.resolve(event.key)
+                    if act:
+                        do_action(act, bool(event.mod & pygame.KMOD_SHIFT))
 
             elif event.type == pygame.JOYBUTTONDOWN:
                 if event.joyindex < len(joysticks):
@@ -1347,16 +1462,21 @@ def main():
         if video_overlay_open:
             draw_video_overlay(screen, font, w, h, video_overlay_text)
 
+        # Settings sits on top of the video prompt: it is modal.
+        if settings_open and settings_panel is not None:
+            settings_panel.draw(screen, w, h)
+
         # Draw hint
-        hint_surf = render_hint()
-        hx, hy = w - hint_w - 24, h - 24
-        if hx < 24:                       # too narrow for the full hint
-            hx = 24
-            short = font.render("↑↓ ⏎ space ←→ F V C T O M Q", True,
-                                (120, 120, 130))
-            screen.blit(short, (24, hy))
-        else:
-            screen.blit(hint_surf, (hx, hy))
+        if show_hints:
+            hint_surf = render_hint()
+            hx, hy = w - hint_w - 24, h - 24
+            if hx < 24:                   # too narrow for the full hint
+                hx = 24
+                short = font.render("↑↓ ⏎ space ←→ F V C T O M Q", True,
+                                    (120, 120, 130))
+                screen.blit(short, (24, hy))
+            else:
+                screen.blit(hint_surf, (hx, hy))
 
         pygame.display.flip()
         clock.tick(60)
