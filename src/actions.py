@@ -20,8 +20,19 @@ Public surface:
 import os
 import sys
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+# Headless support is OPT-IN, never automatic.
+#
+# This module is imported by ncs_launcher.py at module scope, so an
+# unconditional `setdefault("SDL_VIDEODRIVER", "dummy")` here would run before
+# the real app ever calls set_mode() -- and the shipped launcher would open
+# with no window at all, drawing happily into a surface nobody can see. That
+# is exactly what happened in 1.0.0.
+#
+# Every test that needs a headless driver sets it in the test file before
+# importing pygame, so nothing here is needed for the suite either.
+if os.environ.get("NCS_HEADLESS"):
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame  # noqa: E402  (env vars above must be set before SDL loads)
 

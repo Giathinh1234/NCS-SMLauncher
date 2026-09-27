@@ -29,8 +29,13 @@ Public surface:
 
 import os
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+# Headless is opt-in; see the note in actions.py. This module is imported
+# lazily from the launcher's settings action, so an automatic dummy driver
+# here would open a real window with no video the first time anyone pressed
+# the settings key.
+if os.environ.get("NCS_HEADLESS"):
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame  # noqa: E402  (env vars above must be set before SDL loads)
 
