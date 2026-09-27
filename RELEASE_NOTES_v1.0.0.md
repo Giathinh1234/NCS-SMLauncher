@@ -116,18 +116,44 @@ Stated plainly so nobody is surprised:
   `src/library_ops.py` is complete and tested, including refusing a move into
   a subdirectory of the source and never clobbering an existing destination,
   but no key triggers it yet.
-- **Android was not built or run.** The SDK is not installed on the build
-  machine, so the fixes are committed and unverified by an actual Gradle
-  build. `gradlew` may need network access on first run.
-- **Release assets are macOS arm64 only.** The Linux build script exists and
-  is tested, but no Linux runner produced a binary for this release.
+- **No Linux binary.** The build script exists and is tested, but no Linux
+  runner produced a binary for this release.
 - The `V` overlay takes a path, a `.strm`, or a URL. There is no video file
   browser.
 
+## Verified before release
+
+- **Android genuinely builds.** `app-debug.apk` in this release was produced by
+  a real `./gradlew :app:assembleDebug` (Gradle 8.13, JDK 17). Reading the
+  built APK with `aapt2 dump badging` gives
+  `versionCode='10000' versionName='1.0.0' compileSdkVersion='34'` — the
+  values come from the root `VERSION` file, not a hardcoded literal.
+  `minSdk 26`, `targetSdk 34`, and AGP 8.5.2 are unchanged.
+- **The macOS binary was built from the tagged commit** and reports
+  `HashPlay 1.0.0` via `--version`.
+- **All 21 test files pass**, including the ones that drive real `ffmpeg`
+  processes and a real Gradle configuration.
+- The Gradle wrapper is pinned to the final `gradle-8.13` (not the `8.13-rc-2`
+  that the v8.13.0 tag still pointed at) and carries
+  `distributionSha256Sum`, so a tampered Gradle download is refused.
+
 ## Requirements
 
-- macOS (arm64) for the bundled app
+- macOS (arm64) for the bundled app, or Android 8.0+ (API 26) for the APK
 - `ffmpeg` + `ffprobe` on `PATH` for video backgrounds (everything else works
   without them)
 - `libtorrent` and `sounddevice` are optional; the app reports what is missing
   instead of failing to start
+
+## Checksums
+
+`SHA256SUMS.txt` carries the digest of the macOS binary. Verify before running:
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+The binary is **unsigned**, so macOS Gatekeeper will quarantine it on first
+run. Right-click → Open, or clear the quarantine attribute with
+`xattr -d com.apple.quarantine HashPlay`. A notarized build needs an Apple
+Developer ID; this release does not have one.
