@@ -119,9 +119,15 @@ except nv.VideoError as e:
 print("9) build_visual opens a real pipe and returns sized frames")
 box = pygame.Rect(0, 0, 1280, 800)
 with nv.build_visual(MP4, box) as vis:
-    print("   source size:", vis.width, "x", vis.height,
+    print("   pipe size:", vis.width, "x", vis.height,
           "frame_bytes:", vis.frame_bytes, "duration:", vis.duration)
+    print("   source aspect:", vis.src_width, "x", vis.src_height)
     assert vis.is_alive(), "ffmpeg must be running"
+    # the pipe is deliberately capped; the surface is the on-screen size
+    assert vis.width <= nv.MAX_PIPE_WIDTH, \
+        f"pipe must be capped at {nv.MAX_PIPE_WIDTH}, got {vis.width}"
+    assert vis.src_width == 320 and vis.src_height == 180, \
+        "the source aspect must be remembered for the dest rect"
     got = 0
     first = None
     for _ in range(12):
@@ -131,14 +137,18 @@ with nv.build_visual(MP4, box) as vis:
         if first is None:
             first = (surf, rect)
         assert isinstance(surf, pygame.Surface)
-        assert surf.get_width() == vis.width
-        assert surf.get_height() == vis.height
-        assert rect.width == vis.width and rect.height == vis.height
+        # 16:9 source into a 1280x800 box -> fills the width, letterboxed
+        assert (surf.get_width(), surf.get_height()) == (rect.width, rect.height)
+        assert (surf.get_width(), surf.get_height()) == (1280, 720), \
+            f"dest should fill the 16:9 source, got {surf.get_size()}"
         got += 1
     print("   frames read:", got, "surface:", first[0].get_size(),
           "placed at:", tuple(first[1].topleft))
-    assert got == 12
-    assert vis.frame_index == 12
+    assert got == 12, "every call must return a surface (new or reused)"
+    # frame_index counts only REAL new frames; reused ones don't increment it
+    assert 1 <= vis.frame_index <= 12, \
+        f"frame_index should count new frames, got {vis.frame_index}"
+    print("   new frames decoded:", vis.frame_index, "of", got, "calls")
     # the test pattern is not black, so the surface must carry real pixels
     arr = pygame.surfarray.array3d(first[0])
     assert float(arr.mean()) > 8.0, f"surface looks blank (mean {arr.mean()})"
@@ -176,16 +186,51 @@ with nv.build_visual(MP4, box) as vis:
 print("12b) seeking past the end reports eof rather than hanging")
 with nv.build_visual(MP4, box) as vis:
     vis.seek(1.99)
-    saw = None
-    for _ in range(400):
-        saw = vis.next_surface(box)
-        if saw is None:
+    t_end = time.time() + 8.0
+    while time.time() < t_end:
+        if vis.next_surface(box) is None:
             break
+        time.sleep(0.01)
     print("   eof after seeking to the very end:", vis.eof)
     assert vis.eof, "a seek to the end must terminate"
 
+# ---- the draw path must never block ----------------------------------------
+print("14) the draw path never blocks waiting for a frame")
+long_clip = os.path.join(SCRATCH, "ncs_video_long.mp4")
+if not os.path.exists(long_clip):
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=8",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-shortest", long_clip], check=True, capture_output=True)
+with nv.build_visual(long_clip, box) as vis:
+    # prime one frame, then hammer the call far faster than 30 FPS
+    deadline = time.time() + 3.0
+    vis.next_surface(box)
+    slowest = 0.0
+    calls = 0
+    while time.time() < deadline:
+        t0 = time.perf_counter()
+        result = vis.next_surface(box)
+        slowest = max(slowest, time.perf_counter() - t0)
+        calls += 1
+        if result is None:
+            break
+    print(f"   {calls} calls in 3.0s, slowest single call {slowest*1000:.2f} ms")
+    assert calls > 60, f"expected many calls, got {calls} -- the read is blocking"
+    assert slowest < 0.030, \
+        f"a single frame read blocked for {slowest*1000:.1f} ms; the UI would stall"
+print("15) a stale frame is reused, so the visual keeps updating smoothly")
+with nv.build_visual(long_clip, box) as vis:
+    first = vis.next_surface(box)
+    assert first is not None
+    stale = vis.next_surface(box)
+    assert stale is not None, "must reuse the last surface, not return None"
+    print("   ok")
+
 # ---- a real .strm driving the pipe -----------------------------------------
-print("13) a .strm file drives the pipe end to end")
+print("16) a .strm file drives the pipe end to end")
 with tempfile.TemporaryDirectory() as d:
     strm = os.path.join(d, "movie.strm")
     open(strm, "w").write(MP4 + "\n")

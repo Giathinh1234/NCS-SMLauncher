@@ -51,6 +51,7 @@ import numpy as np
 
 from media_keys import MediaKeyTap, open_accessibility_settings
 from ncs_sphere import draw_ncs_sphere
+import ncs_video
 
 try:
     import sounddevice as sd
@@ -281,11 +282,28 @@ def neon_color(t, sat=0.95, val=1.0):
 # Imported at the top of the file with the other modules.
 
 
-def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata):
-    mag = player.spectrum()
+def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
+                    video_slot=None):
     cx, cy = w // 2, h // 2
     surf = pygame.Surface((w, h), pygame.SRCALPHA)
     base_y = h - 90
+
+    if mode == "video":
+        # The video paints the whole window. It is drawn FIRST and returns,
+        # so the UI, chat and overlays still land on top of it.
+        if video_slot is not None and video_slot.draw(screen, pygame.Rect(0, 0, w, h),
+                                                      player):
+            return
+        # no live frame (armed with no sidecar, failed, or ended): say so once
+        # rather than showing a black rectangle, and let F move on.
+        msg = getattr(video_slot, "message", "") or "no video for this track"
+        hint = pygame.font.Font(None, 22).render(
+            f"video: {msg}", True, (150, 155, 170))
+        screen.blit(hint, (cx - hint.get_width() // 2,
+                           cy - 90 - hint.get_height()))
+        return
+
+    mag = player.spectrum()
 
     if mode == "radial":
         # The real NCS ball: 3D point-cloud sphere with a flowing gold membrane
@@ -828,6 +846,45 @@ class HermesChat:
                     (box.x + 10, box.y + 8))
 
 
+def draw_video_overlay(screen, font, w, h, text):
+    """Prompt for a video path, a .strm file, or a web URL."""
+    panel = pygame.Surface((w, h), pygame.SRCALPHA)
+    panel.fill((6, 8, 12, 236))
+    screen.blit(panel, (0, 0))
+
+    title = font.render("VIDEO SOURCE", True, (0, 230, 190))
+    screen.blit(title, (w // 2 - title.get_width() // 2, h // 2 - 96))
+
+    lines = [
+        "a video file (.mp4 .mkv .webm .avi .mov)",
+        "a .strm file containing a path or URL",
+        "a web link - the stream is extracted, never the ad page",
+        "",
+    ]
+    for i, line in enumerate(lines):
+        surf = font.render(line, True, (150, 155, 170))
+        screen.blit(surf, (w // 2 - surf.get_width() // 2, h // 2 - 58 + i * 26))
+
+    shown = text or ""
+    if len(shown) > 60:
+        shown = "..." + shown[-57:]
+    box = font.render(f"> {shown}_", True, (235, 235, 245))
+    screen.blit(box, (w // 2 - box.get_width() // 2, h // 2 + 62))
+
+    hint = font.render("Enter play  ·  Esc cancel  ·  backspace deletes",
+                       True, (110, 115, 130))
+    screen.blit(hint, (w // 2 - hint.get_width() // 2, h // 2 + 104))
+
+    if not ncs_video.have_ffmpeg():
+        warn = font.render("ffmpeg not found on PATH - video cannot play",
+                           True, (255, 120, 90))
+        screen.blit(warn, (w // 2 - warn.get_width() // 2, h // 2 + 136))
+    elif not ncs_video.have_ytdlp():
+        warn = font.render("yt-dlp not found - web links will not resolve",
+                           True, (255, 190, 90))
+        screen.blit(warn, (w // 2 - warn.get_width() // 2, h // 2 + 136))
+
+
 def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
     ow, oh = 700, 240
     ox, oy = (w - ow) // 2, (h - oh) // 2 - 50
@@ -898,7 +955,12 @@ def main():
 
     selected = 0
     vis_mode_idx = 0
-    modes = ["bars", "mirror", "radial", "disc", "album"]
+    modes = ["bars", "mirror", "radial", "disc", "album", "video"]
+    # The video layer. ffmpeg must exist or the key is refused with a reason
+    # rather than silently doing nothing.
+    video_slot = ncs_video.VideoSlot()
+    video_overlay_open = False
+    video_overlay_text = ""
     muted = False
     start_time = time.time()
     if tracks:
@@ -921,8 +983,8 @@ def main():
 
     def render_hint():
         return font.render("↑↓ select  ⏎ play  space pause  ←→ seek  "
-                           "F visual  C hermes  T torrent  O folder  "
-                           "M mute  Q quit",
+                           "F visual  V video  C hermes  T torrent  "
+                           "O folder  M mute  Q quit",
                            True, (120, 120, 130))
 
     hint_surf = render_hint()
@@ -999,6 +1061,28 @@ def main():
                     if chat_panel.handle_key(event) == "close":
                         chat_open = False
                     continue
+                if video_overlay_open:
+                    # paste a video path, a .strm file, or a web URL
+                    if event.key == pygame.K_ESCAPE:
+                        video_overlay_open = False
+                        video_overlay_text = ""
+                        pygame.key.stop_text_input()
+                    elif event.key == pygame.K_RETURN and video_overlay_text.strip():
+                        want = video_overlay_text.strip()
+                        video_overlay_open = False
+                        video_overlay_text = ""
+                        pygame.key.stop_text_input()
+                        # an explicit choice is pinned: track changes will not
+                        # override it with a sidecar
+                        video_slot.pin(want)
+                        if modes[vis_mode_idx] != "video":
+                            vis_mode_idx = modes.index("video")
+                        push_notice(("info", f"video: {os.path.basename(want)}"))
+                    elif event.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                        video_overlay_text = video_overlay_text[:-1]
+                    elif event.unicode and event.unicode.isprintable():
+                        video_overlay_text += event.unicode
+                    continue
                 if overlay_open:
                     if event.key == pygame.K_ESCAPE:
                         overlay_open = False
@@ -1022,6 +1106,22 @@ def main():
                 elif event.key == pygame.K_t:
                     overlay_open = True
                     pygame.key.start_text_input()
+                elif event.key == pygame.K_v:
+                    # V toggles the video layer; Shift+V (or V while it is
+                    # already on) asks for an explicit path / .strm / URL.
+                    if video_slot.enabled and not video_slot._pinned:
+                        if video_slot.is_active() and not (
+                                event.mod & pygame.KMOD_SHIFT):
+                            video_slot.clear()
+                            push_notice(("info", "video off"))
+                        else:
+                            video_overlay_open = True
+                            video_overlay_text = ""
+                            pygame.key.start_text_input()
+                    else:
+                        video_overlay_open = True
+                        video_overlay_text = ""
+                        pygame.key.start_text_input()
                 elif event.key == pygame.K_o:
                     picked = pick_folder_dialog(folder)
                     if picked and os.path.isdir(picked):
@@ -1207,9 +1307,13 @@ def main():
         bg_val = int(20 + 10 * math.sin(t * 0.2))
         screen.fill((bg_val, bg_val // 2 + 6, bg_val + 14))
 
-        # Draw visualizer
+        # Draw visualizer. The video slot follows the selected track so a
+        # sidecar appears on its own; a pinned source ignores track changes.
         current_metadata = tracks[selected] if tracks else {}
-        draw_visualizer(screen, player, w, h, modes[vis_mode_idx], t, current_metadata)
+        if modes[vis_mode_idx] == "video" and tracks:
+            video_slot.follow_track(tracks[selected]['path'])
+        draw_visualizer(screen, player, w, h, modes[vis_mode_idx], t,
+                        current_metadata, video_slot=video_slot)
 
         # Draw UI
         draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
@@ -1239,12 +1343,16 @@ def main():
             elif overlay_open:
                 draw_torrent_overlay(screen, font, w, h, overlay_text, statuses, None)
 
+        # Draw the video-source overlay above everything else
+        if video_overlay_open:
+            draw_video_overlay(screen, font, w, h, video_overlay_text)
+
         # Draw hint
         hint_surf = render_hint()
         hx, hy = w - hint_w - 24, h - 24
         if hx < 24:                       # too narrow for the full hint
             hx = 24
-            short = font.render("↑↓ ⏎ space ←→ F C T O M Q", True,
+            short = font.render("↑↓ ⏎ space ←→ F V C T O M Q", True,
                                 (120, 120, 130))
             screen.blit(short, (24, hy))
         else:
@@ -1253,7 +1361,9 @@ def main():
         pygame.display.flip()
         clock.tick(60)
 
-    # Cleanup
+    # Cleanup. Reap the ffmpeg pipe before pygame goes away, or a detached
+    # ffmpeg survives the app and keeps decoding into a closed pipe.
+    video_slot.clear(by_user=False)
     if torrents and torrents.session:
         torrents.session.pause()
     pygame.quit()

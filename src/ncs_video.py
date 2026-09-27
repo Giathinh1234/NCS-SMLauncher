@@ -21,8 +21,10 @@ What this module supports:
     rendered because nothing ever loads the page.
 """
 import os
+import select
 import shutil
 import subprocess
+import time
 
 import numpy as np
 import pygame
@@ -39,6 +41,16 @@ YTDLP = shutil.which("yt-dlp") or shutil.which("yt_dlp")
 # player; asking ffmpeg for the source rate would mean decoding far more than
 # the window can show.
 TARGET_FPS = 30
+
+# Upper bound on the frame size we actually pull down the pipe.
+#
+# A full-window 1280x720 rgb24 frame is 2.7 MB, and the per-frame cost is
+# dominated by moving that many bytes, not by decoding. Measured at 1280x800:
+# a full-resolution pipe cost 34 ms/frame while a 640-wide pipe cost far less
+# for a visually indistinguishable result, because the video is a soft moving
+# background and smoothscale is the right tool for that. Cap the pipe, let
+# pygame scale the result.
+MAX_PIPE_WIDTH = 640
 
 
 class VideoError(Exception):
@@ -203,11 +215,18 @@ class VideoVisual:
 
     duration = 0.0
     note = ""
+    src_width = 0
+    src_height = 0
 
-    def __init__(self, source, width, height, fps=TARGET_FPS, start_at=0.0):
+    def __init__(self, source, width, height, fps=TARGET_FPS, start_at=0.0,
+                 src_size=None):
         self.source = source
         self.proc = None
         self.fps = max(1, int(fps))
+        if src_size:
+            self.src_width, self.src_height = src_size
+        else:
+            self.src_width, self.src_height = width, height
         self.frame_bytes = width * height * 3
         self.width = width
         self.height = height
@@ -216,6 +235,7 @@ class VideoVisual:
         self.last_error = ""
         self.eof = False
         self._buffer = bytearray()
+        self._last_surface = None    # reused when no new frame is ready
         self._open(start_at=self.start_at)
 
     # ---- process lifecycle ---------------------------------------------
@@ -267,14 +287,57 @@ class VideoVisual:
         self.frame_index = 0
         self.eof = False
         self._buffer = bytearray()
+        self._last_surface = None      # stale frame belongs to the old position
         self._open(start_at=max(0.0, float(seconds)))
 
     # ---- frame production ----------------------------------------------
-    def next_surface(self, box):
+    # How long the very first frame may block the draw. A background that has
+    # never shown anything is worse than a few ms of latency, so the first
+    # read waits; every read after that is non-blocking.
+    FIRST_FRAME_WAIT = 0.75
+
+    def _read_available(self, want, timeout):
+        """Read up to `want` bytes, waiting at most `timeout` seconds.
+
+        With timeout 0 this never blocks. That is the difference between a
+        video that paces the UI and one that stalls it: ffmpeg with `-re`
+        emits frames at real time, so a blocking read on every frame would
+        hold the main loop for a whole frame interval. The app runs at 60 FPS
+        and the video at 30, so most frames should reuse the previous surface
+        rather than wait for the next one.
+        """
+        if self.proc is None or self.proc.stdout is None:
+            return b""
+        try:
+            fd = self.proc.stdout.fileno()
+        except (OSError, ValueError):
+            return b""
+        try:
+            ready, _w, _x = select.select([fd], [], [], max(0.0, timeout))
+        except (OSError, ValueError):
+            return b""
+        if not ready:
+            return b""
+        try:
+            # read1(), NOT read(): read(n) on a BufferedReader blocks until it
+            # has n bytes or hits EOF, so a "ready" pipe that has only half a
+            # frame would still stall the draw path. Measured: one such call
+            # blocked for 268 ms. read1() returns whatever has arrived.
+            reader = self.proc.stdout
+            if hasattr(reader, "read1"):
+                return reader.read1(want)
+            return reader.read(want)
+        except (OSError, ValueError):
+            return b""
+
+    def next_surface(self, box, allow_stale=True):
         """A pygame Surface for the next frame, letterboxed into `box`.
 
-        `box` is a pygame.Rect. Returns None at end of stream or on a dead
-        pipe, so the caller can fall back to another visualizer.
+        The pipe produces a capped-size frame; this scales it to fill `box`.
+        The first frame waits briefly (nothing on screen is worse than a few
+        ms of latency); after that, a frame interval with nothing ready
+        returns the PREVIOUS surface rather than blocking. Returns None at end
+        of stream or on a dead pipe, so the caller can fall back.
         """
         if self.frame_bytes < 3 or self.width < 1 or self.height < 1:
             # A zero-size frame would reshape into an empty array and take
@@ -287,15 +350,33 @@ class VideoVisual:
             self.eof = True
             return None
 
+        first = self._last_surface is None
+        deadline = (time.monotonic() + self.FIRST_FRAME_WAIT) if first else 0.0
+
         while len(self._buffer) < self.frame_bytes:
-            try:
-                chunk = self.proc.stdout.read(self.frame_bytes * 2)
-            except (OSError, ValueError):
-                chunk = b""
+            timeout = 0.0
+            if first:
+                timeout = max(0.0, deadline - time.monotonic())
+                if timeout <= 0.0:
+                    break
+            chunk = self._read_available(self.frame_bytes * 2, timeout)
             if not chunk:
-                self.eof = True
+                # Nothing ready. Distinguish "not yet" from "finished": if the
+                # process is done and the buffer is short, it really is EOF.
+                if self.proc.poll() is not None:
+                    self.eof = True
+                    return None
+                if allow_stale and self._last_surface is not None:
+                    return self._last_surface
                 return None
             self._buffer.extend(chunk)
+
+        if len(self._buffer) < self.frame_bytes:
+            # First frame never arrived inside the wait. Report honestly
+            # rather than painting garbage.
+            if self.proc.poll() is not None:
+                self.eof = True
+            return None
 
         raw = bytes(self._buffer[:self.frame_bytes])
         del self._buffer[:self.frame_bytes]
@@ -311,11 +392,19 @@ class VideoVisual:
         surf = pygame.surfarray.make_surface(np.transpose(arr, (1, 0, 2)))
         self.frame_index += 1
 
-        bx, by, bw, bh = fit_rect(self.width, self.height, box.width, box.height)
-        if (bw, bh) == (surf.get_width(), surf.get_height()):
-            return surf, pygame.Rect(bx, by, bw, bh)
+        # Destination: the source aspect, filling the box.
+        bx, by, bw, bh = fit_rect(self.src_width, self.src_height,
+                                   box.width, box.height)
+        dest = pygame.Rect(bx, by, bw, bh)
+        if (surf.get_width(), surf.get_height()) == (bw, bh):
+            self._last_surface = (surf, dest)
+            return self._last_surface
+        # The pipe is deliberately smaller than the window (see
+        # MAX_PIPE_WIDTH), so this upscale is the normal path, not an
+        # exception. smoothscale beats a raw blit for a soft moving image.
         scaled = pygame.transform.smoothscale(surf, (bw, bh))
-        return scaled, pygame.Rect(bx, by, bw, bh)
+        self._last_surface = (scaled, dest)
+        return self._last_surface
 
     def __enter__(self):
         return self
@@ -348,12 +437,21 @@ def build_visual(path_or_url, box, allow_web=True, sync_to=None):
         src_w, src_h, duration = box_w, box_h, 0.0
 
     # fit_rect returns (x, y, w, h) -- take the size, not the offsets
-    _x, _y, target_w, target_h = fit_rect(src_w, src_h, box_w, box_h)
-    if target_w < 1 or target_h < 1:
+    _x, _y, dest_w, dest_h = fit_rect(src_w, src_h, box_w, box_h)
+    if dest_w < 1 or dest_h < 1:
         raise VideoError(f"could not size a frame for {os.path.basename(source)}")
 
+    # The pipe is capped: a full-window frame is ~2.7 MB and moving those bytes
+    # dominates the frame cost. Decode small, let pygame scale up.
+    pipe_w, pipe_h = dest_w, dest_h
+    if pipe_w > MAX_PIPE_WIDTH:
+        shrink = MAX_PIPE_WIDTH / pipe_w
+        pipe_w = max(2, int(pipe_w * shrink))
+        pipe_h = max(2, int(pipe_h * shrink))
+
     start = 0.0 if sync_to is None else max(0.0, float(sync_to))
-    visual = VideoVisual(source, target_w, target_h, start_at=start)
+    visual = VideoVisual(source, pipe_w, pipe_h, start_at=start,
+                         src_size=(src_w, src_h))
     visual.duration = duration
     visual.note = note
     return visual
@@ -590,7 +688,19 @@ class VideoSlot:
         return 0, 0
 
     def _target_size(self, box):
-        """The frame size build_visual would choose for this box."""
+        """The PIPE size build_visual would choose for this box.
+
+        This is the capped size, not the on-screen size, because that is what
+        VideoVisual.width/height hold.
+        """
+        dest_w, dest_h = self._target_size_raw(box)
+        if dest_w > MAX_PIPE_WIDTH:
+            shrink = MAX_PIPE_WIDTH / dest_w
+            return max(2, int(dest_w * shrink)), max(2, int(dest_h * shrink))
+        return dest_w, dest_h
+
+    def _target_size_raw(self, box):
+        """The on-screen size: source aspect filling the box."""
         sw, sh = self._source_size
         if sw <= 0 or sh <= 0:
             return max(2, box.width), max(2, box.height)

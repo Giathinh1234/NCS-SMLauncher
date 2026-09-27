@@ -111,19 +111,41 @@ print("   spawns across 20 frames:", len(SPAWNS))
 assert len(SPAWNS) == 0, f"steady state must not respawn, got {len(SPAWNS)}"
 assert slot.frames_drawn >= 20
 
-print("8) resizing the box rebuilds exactly ONCE, then settles")
+print("8a) resizing WITHIN the same cap tier does not rebuild the pipe")
+# The pipe is capped at MAX_PIPE_WIDTH, so a 1280x800 box and an 800x600 box
+# both decode to the same 640x360 frame. Rebuilding ffmpeg for that would be
+# pure waste, so it must not happen.
+slot.request(CLIP)
+slot.draw(screen, BOX)
+pipe_before = (slot.visual.width, slot.visual.height)
+print("   pipe at 1280x800:", pipe_before)
+assert pipe_before[0] <= nv.MAX_PIPE_WIDTH
 SPAWNS.clear()
 smaller = pygame.Rect(0, 0, 800, 600)
-assert slot.draw(screen, smaller) is True
+for _ in range(10):
+    assert slot.draw(screen, smaller) is True
+print("   spawns after resizing to 800x600:", len(SPAWNS))
+assert len(SPAWNS) == 0, \
+    f"same pipe size must not respawn ffmpeg, got {len(SPAWNS)}"
+assert (slot.visual.width, slot.visual.height) == pipe_before
+
+print("8b) resizing ACROSS the cap tier rebuilds exactly ONCE, then settles")
+SPAWNS.clear()
+tiny = pygame.Rect(0, 0, 480, 360)      # below the cap -> a genuinely new size
+assert slot.draw(screen, tiny) is True
+print("   pipe at 480x360:", (slot.visual.width, slot.visual.height))
+assert (slot.visual.width, slot.visual.height) != pipe_before, \
+    "a size below the cap should decode at its own size"
 print("   spawns on first frame at the new size:", len(SPAWNS))
-assert len(SPAWNS) == 1, f"resize must rebuild once, not per frame: {len(SPAWNS)}"
+assert len(SPAWNS) == 1, f"a real resize must rebuild once, got {len(SPAWNS)}"
 SPAWNS.clear()
 for _ in range(15):
-    assert slot.draw(screen, smaller) is True
+    assert slot.draw(screen, tiny) is True
 print("   spawns across 15 more frames at the new size:", len(SPAWNS))
 assert len(SPAWNS) == 0, "must settle after one rebuild"
-assert slot.visual.width == 800 and slot.visual.height == 450, \
-    f"expected 800x450 letterbox, got {slot.visual.width}x{slot.visual.height}"
+# 16:9 source into a 480x360 box -> 480x270, letterboxed vertically
+assert (slot.visual.width, slot.visual.height) == (480, 270), \
+    f"expected a 16:9 pipe, got {slot.visual.width}x{slot.visual.height}"
 slot.close()
 
 # ---- failure behaviour ------------------------------------------------------
