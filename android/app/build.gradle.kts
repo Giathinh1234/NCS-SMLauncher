@@ -18,10 +18,9 @@ plugins {
 // (e.g. 0.99 -> 9900, 1.0.0 -> 10000, 1.2.3 -> 10203). Google Play requires
 // only that versionCode strictly increase between uploads, so keeping minor and
 // patch below 100 preserves that ordering.
-// ---------------------------------------------------------------------------
-// `require`, not `check`: in a Gradle build script `check` is the lifecycle
-// TASK, so `check(cond) { ... }` does not resolve as a function call and
-// fails to compile. `require` is plain Kotlin stdlib and always available.
+// -----------------------------------------------------------------------
+// A missing, blank or malformed VERSION file must fail the build loudly, so
+// every step below is guarded. `require` throws, which aborts configuration.
 // -----------------------------------------------------------------------
 val versionFile = rootProject.file("../VERSION")
 require(versionFile.isFile) {
