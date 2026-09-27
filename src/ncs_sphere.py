@@ -93,12 +93,32 @@ _R_SWING = 0.30
 # The floor is set by the base dark-dot level rather than the fill, so this is
 # as dim as the crest can go without losing the gold.
 _REF_PPP = 8.0
-_NORM_POW = 0.8
+_NORM_POW = 0.50
 
-# --- crest shape, calibrated against the reference's 10.4% bright area ---
-_RIDGE_LO = 0.70
-_RIDGE_POW = 2.4
-_FILL_W = 0.18
+# --- crest shape ---
+# These are the MEASURED radial statistics of the reference still
+# (Downloads/ExwK_GkWEAENp4e.jpg, 1080x1080, ball R=447px), and of a real NCS
+# video, both of which turned out to be the same design in different colours:
+# a hollow shell with a thick glowing rim, NOT a solid dot ball.
+#
+#   band (r/R)   reference mean / %bright     real video mean / %bright
+#   core 0.00-0.60     45 /  7.2                   18 /  0.0
+#   inner 0.60-0.85    83 / 11.8                   49 /  1.4
+#   rim   0.85-1.02   227 / 39.1                  114 /  9.1
+#
+# The peak is at r/R 0.95-1.00 (mean 357, 64.9% bright); outside r/R 1.05 it
+# is pure black. So the rim is the dominant feature and the core is dark with
+# a sparse gold stipple.
+#
+# Earlier versions had this backwards: a uniformly dim ball (core 35, rim 92)
+# with a gold membrane smeared across the face. Raising _RIDGE_LO to 0.70
+# starved the core of the ~7% bright stipple the reference has, and a narrow
+# rim Gaussian (0.055) left the limb at 1/3 of its correct brightness.
+# A 0.30 sigma with a 3.2x boost, and a lower ridge threshold so the stipple
+# actually covers ~7% of the core, reproduces the measured profile.
+_RIDGE_LO = 0.45
+_RIDGE_POW = 1.40
+_FILL_W = 0.30
 
 # measured reference colours
 _CREST = (255.0, 227.0, 152.0)
@@ -318,8 +338,13 @@ def draw_ncs_sphere(screen, player, w, h, t):
     z = by * st + z0 * ct
 
     # --- limb highlight: the silhouette of the UNIT sphere is the z0 == 0
-    #     circle, so anchor the rim there and keep it thin ---
-    rim = np.exp(-((z0 / 0.055) ** 2))
+    #     circle. The real NCS ball is a hollow shell: a dark core with a
+    #     thick glowing rim, and its radial profile (measured off the
+    #     reference still) rises from mean 100 at r/R 0.85 to 357 at r/R 0.97.
+    #     A wide Gaussian (sigma 0.40) washed the whole outer half into a
+    #     uniform shell; the real edge is tighter, so pull it in and let the
+    #     fill pass build the thickness instead.
+    rim = np.exp(-((z0 / 0.30) ** 2))
 
     f = _sphere_field(la, lo, t, bass, mid, high, dt)
     # Bass drives the ripple depth: 0.04 at rest up to 0.17 on a loud hit.
@@ -334,7 +359,7 @@ def draw_ncs_sphere(screen, player, w, h, t):
     ridge = np.clip((f01 - _RIDGE_LO) / (1.0 - _RIDGE_LO), 0, 1) ** _RIDGE_POW
 
     # rim and membrane are independent (note 6)
-    rim_light = 0.45 * rim * (1.0 - 0.85 * ridge)
+    rim_light = 3.20 * rim * (1.0 - 0.85 * ridge)
     shade = (1.0 - 0.18 * np.clip(z, 0, 1)) * (1.0 + rim_light)
 
     gold = ridge
@@ -353,7 +378,7 @@ def draw_ncs_sphere(screen, player, w, h, t):
     # Two passes: 1px dots for the texture, then a 9-tap fill (note 8) for the
     # membrane and rim so they read as solid sheets rather than speckle.
     buf = _splat(w, h, sx, sy, cr, cg, cb, _DOT)
-    solid = (ridge > 0.30) | (rim > 0.6)
+    solid = (ridge > 0.30) | (rim > 0.15)
     if solid.any():
         br = np.where(solid, cr, 0.0) * _FILL_W
         bg = np.where(solid, cg, 0.0) * _FILL_W
