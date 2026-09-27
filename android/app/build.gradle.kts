@@ -19,19 +19,23 @@ plugins {
 // only that versionCode strictly increase between uploads, so keeping minor and
 // patch below 100 preserves that ordering.
 // ---------------------------------------------------------------------------
+// `require`, not `check`: in a Gradle build script `check` is the lifecycle
+// TASK, so `check(cond) { ... }` does not resolve as a function call and
+// fails to compile. `require` is plain Kotlin stdlib and always available.
+// -----------------------------------------------------------------------
 val versionFile = rootProject.file("../VERSION")
-check(versionFile.isFile) {
+require(versionFile.isFile) {
     "VERSION file not found at ${versionFile.absolutePath}. " +
         "It is the single source of truth for the app version and must be " +
         "committed at the repo root."
 }
 val appVersionName = versionFile.readText().trim()
-check(appVersionName.isNotEmpty()) {
+require(appVersionName.isNotEmpty()) {
     "VERSION file at ${versionFile.absolutePath} is empty. " +
         "Put a version like '1.0.0' in it (major.minor.patch)."
 }
 val versionParts = appVersionName.split(".")
-check(versionParts.size == 3 && versionParts.all { it.isNotEmpty() && it.all(Char::isDigit) }) {
+require(versionParts.size == 3 && versionParts.all { it.isNotEmpty() && it.all(Char::isDigit) }) {
     "VERSION file at ${versionFile.absolutePath} contains '$appVersionName', " +
         "which is not a plain major.minor.patch triple. The Android build " +
         "derives versionCode from those three integers and cannot continue."
