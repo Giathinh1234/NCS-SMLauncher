@@ -92,13 +92,24 @@ handled = set()
 for node in ast.walk(dispatch):
     if isinstance(node, ast.If):
         test = node.test
-        # `act == "name"` appears as a Compare on the `act` name
-        if isinstance(test, ast.Compare) and isinstance(test.left, ast.Name):
-            if test.left.id == "act" and len(test.ops) == 1 and \
-                    isinstance(test.ops[0], ast.Eq) and \
-                    len(test.comparators) == 1 and \
-                    isinstance(test.comparators[0], ast.Constant):
-                handled.add(test.comparators[0].value)
+        if not isinstance(test, ast.Compare) or not isinstance(test.left, ast.Name):
+            continue
+        if test.left.id != "act" or len(test.ops) != 1:
+            continue
+        op = test.ops[0]
+        # `act == "name"` and `act in ("a", "b")` are both legitimate ways to
+        # dispatch. The second form is what an action with a legacy alias
+        # uses (open_api, still answering to the 1.0.x name open_hermes), and
+        # recognising it here stops a real branch from reading as "missing".
+        if isinstance(op, ast.Eq) and len(test.comparators) == 1 and \
+                isinstance(test.comparators[0], ast.Constant):
+            handled.add(test.comparators[0].value)
+        elif isinstance(op, ast.In) and len(test.comparators) == 1:
+            node_cmp = test.comparators[0]
+            if isinstance(node_cmp, (ast.Tuple, ast.List, ast.Set)):
+                for elt in node_cmp.elts:
+                    if isinstance(elt, ast.Constant):
+                        handled.add(elt.value)
 
 missing = sorted(set(A.ACTIONS) - handled)
 assert not missing, \

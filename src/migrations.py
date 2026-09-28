@@ -14,7 +14,7 @@ import copy
 
 from config import DEFAULT_KEYMAP
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _migrate_v0_to_v1(cfg):
@@ -44,11 +44,37 @@ def _migrate_v0_to_v1(cfg):
     return out
 
 
+def _migrate_v1_to_v2(cfg):
+    """v1 -> v2: the Hermes chat panel became the control API.
+
+    1.0.x bound C to `open_hermes`, which shelled out to the `hermes` CLI.
+    The key now opens the control API panel, whose action is `open_api`. A
+    user upgrading from 1.0.1 already has a saved keymap, so the v0->v1 step
+    (which would have filled in `open_api` for them) never runs -- without
+    this their C key would silently stop doing anything. Renaming the entry
+    keeps their key AND their custom binding.
+    """
+    out = copy.deepcopy(cfg)
+    keymap = out.get("keymap")
+    if not isinstance(keymap, dict):
+        keymap = {}
+
+    old = keymap.pop("open_hermes", None)
+    if "open_api" not in keymap:
+        # Carry over whatever they had bound, else the default.
+        keymap["open_api"] = old if old else DEFAULT_KEYMAP["open_api"]
+
+    out["keymap"] = keymap
+    out["schema_version"] = 2
+    return out
+
+
 # FROM version -> upgrade step. A gap in this table is tolerated: migrate()
 # just tags the config and moves on, so an intermediate release can ship
 # without a migration.
 MIGRATIONS = {
     0: _migrate_v0_to_v1,
+    1: _migrate_v1_to_v2,
 }
 
 

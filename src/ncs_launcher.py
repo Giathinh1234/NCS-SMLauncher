@@ -204,6 +204,11 @@ class Player(threading.Thread):
         self.pos = 0
         self.paused = True
         self.muted = False
+        # Output gain, 0.0..1.0. Applied in the callback so the control API
+        # has a real volume to set -- previously the stream wrote raw samples
+        # at full scale and only `muted` existed, so /volume would have been a
+        # lie. Read once per block, so it costs nothing in the hot path.
+        self.volume = 1.0
         self.track_path = None
         self.lock = threading.Lock()
         self.ring = np.zeros(FFT_SIZE * 2, dtype=np.float32)
@@ -229,6 +234,8 @@ class Player(threading.Thread):
                 self.ring[-frames:] *= 0.9
         if self.muted:
             out[:] = 0
+        elif self.volume != 1.0:
+            out *= self.volume
         outdata[:] = out
 
     def load(self, path):
@@ -489,9 +496,19 @@ def draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
 
     # current source folder label (top-right)
     if folder:
-        shown = folder
-        while len(shown) > 52 and "/" in shown[1:]:
-            shown = "…" + shown[shown.index("/", 1):]
+        # Truncate from the LEFT so the tail -- the part that actually
+        # identifies the folder -- stays readable. This used to be
+        #
+        #     while len(shown) > 52 and "/" in shown[1:]:
+        #         shown = "…" + shown[shown.index("/", 1):]
+        #
+        # which strips one leading character and prepends an ellipsis, so the
+        # string never gets shorter: `len(shown)` stays above 52 and any path
+        # with a "/" left in it spins forever. It froze the app on its very
+        # first frame for every library path longer than 52 characters, and
+        # only for long ones, which is why it survived every manual test with
+        # a short path like ~/Downloads.
+        shown = folder if len(folder) <= 52 else "…" + folder[-(52 - 1):]
         ft = font.render("SOURCE ▸ " + shown + "   [O to change]", True,
                          (0, 210, 175))
         screen.blit(ft, (w - ft.get_width() - 24, 20))
@@ -655,11 +672,13 @@ def pick_folder_dialog(current):
 
 
 # --------------------------------------------------------------------------
-# Interactive Hermes chat panel
+# Control API panel
 # --------------------------------------------------------------------------
-HERMES_BIN = os.path.expanduser("~/.local/bin/hermes")
-if not os.path.exists(HERMES_BIN):
-    HERMES_BIN = shutil.which("hermes") or "hermes"
+# 1.0.x embedded a chat panel that shelled out to the `hermes` CLI. That made
+# a music player depend on one specific agent install and forced the user to
+# type into the app's own text box. control_api.py replaces it with a
+# loopback HTTP API, so Claude Code, OpenCode, curl, or anything else on this
+# machine can drive playback. The panel below just shows the URL and token.
 
 
 def wrap_text(font, text, max_w):
@@ -693,160 +712,67 @@ def wrap_text(font, text, max_w):
     return lines
 
 
-class HermesChat:
-    """A text-input panel that runs `hermes -z` on a worker thread.
+class ApiPanel:
+    """Read-only panel showing how to drive the app from an agent.
 
-    Rendering and input happen on the main pygame thread; the subprocess runs
-    in the background and posts its reply back through a queue.
+    Deliberately not a chat box. The app has no opinion about which agent you
+    use; it just exposes a loopback API, and this panel tells you the URL,
+    the token, and one example so you can copy something that works.
     """
 
-    def __init__(self, font, rect):
+    def __init__(self, font, rect, describe):
         self.font = font
         self.rect = rect
-        self.messages = []          # list of (role, text)
-        self.input_buf = ""
-        self.caret_on = True
-        self.scroll = 0             # index of first visible wrapped line
-        self.busy = False
-        self._queue = queue.Queue()
-        self._thread = None
-        self.add("hermes", "Hi — I'm Hermes. Ask me about your library, "
-                          "the visualizers, or controls. Enter sends, "
-                          "Esc closes.")
-
-    def add(self, role, text):
-        self.messages.append((role, text))
-
-    def submit(self, context):
-        prompt = self.input_buf.strip()
-        if not prompt or self.busy:
-            return
-        self.add("you", prompt)
-        self.input_buf = ""
-        self.scroll = 10 ** 9
-        self.busy = True
-        self._thread = threading.Thread(
-            target=self._worker, args=(prompt, context), daemon=True)
-        self._thread.start()
-
-    def _worker(self, prompt, context):
-        full = context + "\n\n" + prompt if context else prompt
-        try:
-            r = subprocess.run([HERMES_BIN, "-z", full],
-                               capture_output=True, text=True, timeout=300)
-            out = (r.stdout or "").strip()
-            if not out:
-                err = (r.stderr or "").strip()
-                out = err if err else "(no response from hermes)"
-        except subprocess.TimeoutExpired:
-            out = "(hermes timed out after 300s)"
-        except FileNotFoundError:
-            out = (f"(hermes not found at {HERMES_BIN} — "
-                   "install it or add it to PATH)")
-        except Exception as e:
-            out = f"(hermes error: {e})"
-        self._queue.put(out)
-
-    def poll(self):
-        """Drain finished replies; returns True if one landed this frame."""
-        got = False
-        while True:
-            try:
-                reply = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            self.add("hermes", reply)
-            self.scroll = 10 ** 9
-            self.busy = False
-            got = True
-        return got
+        self.describe = describe      # callable -> one-line status
 
     def handle_key(self, event):
-        if event.key == pygame.K_ESCAPE:
+        if event.key in (pygame.K_ESCAPE, pygame.K_q):
             return "close"
-        if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
-            self.submit(self.context)
-            return None
-        if event.key == pygame.K_BACKSPACE:
-            self.input_buf = self.input_buf[:-1]
-            return None
-        if event.key == pygame.K_UP:
-            self.scroll = max(0, self.scroll - 1)
-            return None
-        if event.key == pygame.K_DOWN:
-            self.scroll += 1
-            return None
-        if event.key == pygame.K_PAGEUP:
-            self.scroll = max(0, self.scroll - 6)
-            return None
-        if event.key == pygame.K_PAGEDOWN:
-            self.scroll += 6
-            return None
-        if event.unicode and event.unicode.isprintable():
-            self.input_buf += event.unicode
         return None
 
     def draw(self, screen, t, w, h):
-        self.context = getattr(self, "context", "")
         r = self.rect
         pad = 18
-        max_w = r.width - pad * 2
-        inner_w = max(60, max_w)
-
         panel = pygame.Surface((r.width, r.height), pygame.SRCALPHA)
         panel.fill((8, 10, 16, 242))
         pygame.draw.rect(panel, (0, 230, 190, 150), panel.get_rect(), 2)
         screen.blit(panel, r.topleft)
 
-        # header
-        head = self.font.render("HERMES  ·  interactive", True, (0, 230, 190))
+        head = self.font.render("CONTROL API  ·  any agent on this machine",
+                                True, (0, 230, 190))
         screen.blit(head, (r.x + pad, r.y + 12))
-        state = "thinking..." if self.busy else "ready"
-        scol = (255, 200, 90) if self.busy else (140, 145, 160)
-        stxt = self.font.render(state, True, scol)
-        screen.blit(stxt, (r.x + r.width - pad - stxt.get_width(), r.y + 12))
         pygame.draw.line(screen, (255, 255, 255, 30),
                          (r.x + pad, r.y + 36), (r.x + r.width - pad, r.y + 36))
 
-        # wrap all messages into a flat list of (text, colour, is_user)
-        wrapped = []
-        for role, text in self.messages:
-            colour = (235, 235, 245) if role == "you" else (170, 235, 220)
-            prefix = "› " if role == "you" else ""
-            for i, line in enumerate(wrap_text(self.font, text, inner_w)):
-                wrapped.append(((prefix if i == 0 else "  ") + line, colour))
-
-        # input box height reserved at the bottom
-        box_h = 40
-        view_top = r.y + 44
-        view_bottom = r.y + r.height - box_h - 22
-        line_h = self.font.get_linesize()
-        max_rows = max(1, (view_bottom - view_top) // line_h)
-
-        self.scroll = max(0, min(self.scroll, max(0, len(wrapped) - 1)))
-        start = min(self.scroll, max(0, len(wrapped) - max_rows))
-        for i, (line, colour) in enumerate(wrapped[start:start + max_rows]):
-            screen.blit(self.font.render(line, True, colour),
-                        (r.x + pad, view_top + i * line_h))
-
-        if len(wrapped) > max_rows:
-            more = self.font.render(
-                f"  ({len(wrapped) - start - max_rows} more lines, "
-                "↑↓ to scroll)", True, (110, 115, 130))
-            screen.blit(more, (r.x + pad, view_bottom + 2))
-
-        # input box
-        box = pygame.Rect(r.x + pad, r.y + r.height - box_h - 8,
-                          max_w, box_h - 8)
-        pygame.draw.rect(screen, (24, 28, 40), box, border_radius=6)
-        pygame.draw.rect(screen, (0, 230, 190, 110), box, 1, border_radius=6)
-        # keep the caret visible by scrolling the input left when it overflows
-        shown = self.input_buf
-        while self.font.size(shown)[0] > box.width - 40 and shown:
-            shown = shown[1:]
-        caret = "▌" if (self.caret_on and int(t * 2) % 2 == 0) else " "
-        screen.blit(self.font.render(shown + caret, True, (255, 255, 255)),
-                    (box.x + 10, box.y + 8))
+        base = r.y + 52
+        line_h = self.font.get_linesize() + 6
+        rows = [
+            ("endpoint", self.describe()),
+            ("", ""),
+            ("example", "curl -H 'Authorization: Bearer <token>' \\"),
+            ("", "     http://127.0.0.1:8777/status"),
+            ("", "curl -X POST -H 'Authorization: Bearer <token>' \\"),
+            ("", "     -d '{\"query\": \"ncs\"}' http://127.0.0.1:8777/play"),
+            ("", ""),
+            ("endpoints", "GET  /status  /tracks  /tracks/search?q="),
+            ("", "POST /play /pause /resume /next /prev /seek"),
+            ("", "     /volume /muted /visualizer /video"),
+            ("", ""),
+            ("note", "loopback only; nothing off this machine can reach it."),
+            ("", "Esc closes."),
+        ]
+        colour_muted = (140, 145, 160)
+        for i, (label, text) in enumerate(rows):
+            if not text and not label:
+                continue
+            y = base + i * line_h
+            if y > r.y + r.height - line_h * 2:
+                break
+            if label and label in ("endpoint", "example", "endpoints", "note"):
+                c = (0, 230, 190)
+            else:
+                c = colour_muted
+            screen.blit(self.font.render(text, True, c), (r.x + pad, y))
 
 
 def draw_video_overlay(screen, font, w, h, text):
@@ -931,7 +857,37 @@ def main():
         print(f"HashPlay {_v.APP_VERSION}")
         return
 
-    folder = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Music")
+    # The config is loaded before the folder is chosen on purpose: the startup
+    # folder has to honour what the setup wizard saved last run, or the wizard
+    # would be re-asked every launch and its answer thrown away.
+    # Load -> migrate -> merge, in that order: migrations must see the real
+    # stored shape before defaults fill in the gaps.
+    cfg = appconfig.load_config()
+    try:
+        cfg = appmigrations.migrate(cfg)
+    except Exception as exc:            # a bad file must not brick the app
+        print(f"settings ignored ({exc}); using defaults")
+        cfg = appconfig.default_config()
+
+    # Precedence: an explicit path on the command line, then whatever the
+    # wizard or settings panel saved, then ~/Music.
+    folder_is_explicit = False
+    if len(sys.argv) > 1:
+        folder = sys.argv[1]
+        folder_is_explicit = True
+    else:
+        saved = (cfg.get("library_folder") or "").strip()
+        folder_is_explicit = bool(saved)
+        folder = saved or os.path.expanduser("~/Music")
+
+    # An explicitly chosen folder IS the answer to the wizard's question. Seed
+    # it into cfg so needs_setup() sees it, otherwise the first-run wizard
+    # pops up modal over a library that is already loaded and correct. The
+    # ~/Music fallback deliberately does not seed: a brand-new user with an
+    # empty ~/Music is exactly who the wizard is for.
+    if folder_is_explicit and not (cfg.get("library_folder") or "").strip():
+        cfg["library_folder"] = folder
+
     folders = [folder]
     os.makedirs(TORRENT_DIR, exist_ok=True)
     folders.append(TORRENT_DIR)
@@ -990,17 +946,11 @@ def main():
     base_y = h - 90
 
     chat_open = False
-    chat_panel = HermesChat(font, pygame.Rect(0, 0, w, h))
+    chat_panel = None
 
-    # ---- settings, keymap, migrations ---------------------------------
-    # Load -> migrate -> merge, in that order: migrations must see the real
-    # stored shape before defaults fill in the gaps.
-    cfg = appconfig.load_config()
-    try:
-        cfg = appmigrations.migrate(cfg)
-    except Exception as exc:            # a bad file must not brick the app
-        push_notice(("error", f"settings ignored: {exc}"), 6.0)
-        cfg = appconfig.default_config()
+    # ---- settings, keymap ---------------------------------------------
+    # cfg was already loaded (and migrated) above, before the folder was
+    # chosen, so the saved library_folder could be honoured.
     keymap = appactions.Keymap(cfg.get("keymap") or {})
     show_hints = bool(cfg.get("show_hints", True))
     settings_open = False
@@ -1016,7 +966,7 @@ def main():
 
     def render_hint():
         return font.render("↑↓ select  ⏎ play  space pause  ←→ seek  "
-                           "F visual  V video  C hermes  T torrent  "
+                           "F visual  V video  C api  T torrent  "
                            "O folder  M mute  Q quit",
                            True, (120, 120, 130))
 
@@ -1028,7 +978,252 @@ def main():
         notice = entry
         notice_until = time.time() + duration
 
+    # ---- control API ----------------------------------------------------
+    # Replaces the 1.0.x Hermes chat panel. Loopback HTTP so any agent on this
+    # machine -- Claude Code, OpenCode, a script, curl -- can control playback
+    # without the app knowing or caring which one it is. Started here, after
+    # push_notice exists, so a bind failure can actually be reported.
+    import control_api as capi_mod
+    api_token = capi_mod.load_or_make_token(
+        os.path.join(appconfig.CONFIG_DIR, "api_token"))
+    api = capi_mod.ControlAPI(
+        host=cfg.get("api_host") or "127.0.0.1",
+        port=int(cfg.get("api_port") or 8777),
+        token=api_token,
+        enabled=bool(cfg.get("api_enabled", True)),
+    )
+    if api.enabled and not api.start():
+        push_notice(("error", f"control API: {api.last_error}"), 8.0)
+    api_open = False
+    api_panel = None               # built lazily, needs the font
+
+    # ---- first-run setup ------------------------------------------------
+    # A first launch with no library folder has nothing to show and no obvious
+    # next step, so the wizard walks it: welcome, dependency report, folder
+    # choice, summary. It edits cfg in place (the same contract
+    # SettingsPanel uses) and reports through on_finish. `needs_setup()` is
+    # False once a folder is chosen or the user skips, so it never nags.
+    import setup_wizard as setup_mod
+    _setup_finished = []
+
+    def _on_setup_done(summary):
+        _setup_finished.append(summary)
+        nonlocal folder
+        save_settings()
+        if summary.get("skipped"):
+            push_notice(("info", "setup skipped - press O to pick a folder"), 5.0)
+        else:
+            missing = summary.get("missing") or []
+            if missing:
+                push_notice(("info",
+                             f"library ready; missing: {', '.join(missing)}"), 6.0)
+            else:
+                push_notice(("info", "library ready"), 3.0)
+
+    setup_wizard = setup_mod.SetupWizard(font, cfg, on_finish=_on_setup_done)
+    setup_active = setup_wizard.needs_setup()
+    if not setup_active:
+        setup_wizard.active = False
+
     nonlocal_selected = [selected]  # for media_key sync
+
+    # ---- API command handlers -------------------------------------------
+    # These run on the MAIN thread, called from api.drain() once per frame.
+    # That is the whole point of the queue in control_api: SDL is not
+    # thread-safe, so the HTTP thread must never touch the player directly.
+    def _cur():
+        return tracks[selected] if 0 <= selected < len(tracks) else {}
+
+    def _safe_position(p):
+        """player.position() reads audio-thread state; never let it raise.
+
+        The callback rewrites samples/pos as it plays, and a transient failure
+        here would take down the whole frame -- and with it the app -- just
+        because an agent asked for /status.
+        """
+        try:
+            return round(float(p.position()), 2)
+        except Exception:
+            return 0.0
+
+    def _safe_volume(p):
+        try:
+            return round(float(p.volume), 3)
+        except Exception:
+            return 1.0
+
+    def _need_tracks():
+        if not tracks:
+            raise RuntimeError("the library is empty; press O to pick a folder")
+        return True
+
+    def _reject_during_setup():
+        if setup_active:
+            raise RuntimeError(
+                "the first-run setup wizard is open and is modal; finish or "
+                "skip it (Esc) before controlling playback")
+
+    def _select_by_query(q):
+        q = (q or "").lower().strip()
+        if not q:
+            raise ValueError("play needs an index, a query, or nothing")
+        for i, tr in enumerate(tracks):
+            hay = f"{tr.get('title','')} {tr.get('artist','')} {tr.get('album','')}".lower()
+            if q in hay:
+                return i
+        # fall back to a loose subsequence match so "drft" finds "Drift"
+        for i, tr in enumerate(tracks):
+            hay = f"{tr.get('title','')} {tr.get('artist','')}".lower()
+            if all(ch in hay for ch in q if not ch.isspace()):
+                return i
+        raise ValueError(f"nothing in the library matches {q!r}")
+
+    def api_cmd_tracks(_a):
+        return [{"index": i, "title": tr.get("title"),
+                 "artist": tr.get("artist"), "album": tr.get("album"),
+                 "path": tr.get("path")} for i, tr in enumerate(tracks)]
+
+    def api_cmd_search(a):
+        q = (a.get("q") or "").lower().strip()
+        if not q:
+            return api_cmd_tracks({})
+        hits = []
+        for i, tr in enumerate(tracks):
+            hay = f"{tr.get('title','')} {tr.get('artist','')} {tr.get('album','')}".lower()
+            if q in hay:
+                hits.append({"index": i, "title": tr.get("title"),
+                             "artist": tr.get("artist")})
+        return {"query": q, "count": len(hits), "results": hits}
+
+    def api_cmd_play(a):
+        nonlocal selected
+        _reject_during_setup()
+        _need_tracks()
+        if "index" in a:
+            idx = int(a["index"])
+            if not 0 <= idx < len(tracks):
+                raise IndexError(f"index {idx} out of range (0..{len(tracks)-1})")
+        elif a.get("query"):
+            idx = _select_by_query(a["query"])
+        else:
+            # bare /play means "resume what is loaded"
+            if not player.paused:
+                return {"status": "already playing",
+                        "track": _cur().get("title")}
+            player.toggle_pause()
+            return {"status": "resumed", "track": _cur().get("title")}
+        selected = idx
+        nonlocal_selected[0] = selected
+        player.load(tracks[selected]['path'])
+        return {"status": "playing", "index": selected,
+                "track": tracks[selected].get("title")}
+
+    def api_cmd_pause(_a):
+        if not player.track_path:
+            raise RuntimeError("nothing is loaded")
+        if not player.paused:
+            player.toggle_pause()
+        return {"status": "paused", "track": _cur().get("title")}
+
+    def api_cmd_resume(_a):
+        if not player.track_path:
+            raise RuntimeError("nothing is loaded")
+        if player.paused:
+            player.toggle_pause()
+        return {"status": "playing", "track": _cur().get("title")}
+
+    def _step(delta):
+        nonlocal selected
+        _reject_during_setup()
+        _need_tracks()
+        selected = (selected + delta) % len(tracks)
+        nonlocal_selected[0] = selected
+        player.load(tracks[selected]['path'])
+        return {"index": selected, "track": tracks[selected].get("title")}
+
+    def api_cmd_next(_a):
+        return _step(1)
+
+    def api_cmd_prev(_a):
+        return _step(-1)
+
+    def api_cmd_seek(a):
+        if not player.track_path:
+            raise RuntimeError("nothing is loaded")
+        # Player.seek() is relative by design; /seek {"seconds": n} is what an
+        # agent naturally wants, so convert here rather than making every
+        # caller do the subtraction against a position it cannot trust.
+        if "seconds" in a:
+            target = max(0.0, float(a["seconds"]))
+            if "duration" in a:      # trust the caller's duration if it passed one
+                dur = max(0.0, float(a["duration"]))
+            else:
+                dur = player.duration()
+            if dur > 0 and target > dur:
+                raise ValueError(f"cannot seek to {target}s; the track is {dur:.1f}s")
+            delta = target - _safe_position(player)
+            player.seek(delta)
+            return {"seeked_to": round(_safe_position(player), 2),
+                    "duration": round(dur, 2)}
+        if "delta" in a:
+            player.seek(float(a["delta"]))
+            return {"seeked_to": round(_safe_position(player), 2)}
+        raise ValueError("seek needs 'seconds' or 'delta'")
+
+    def api_cmd_volume(a):
+        nonlocal muted
+        if "value" in a:
+            v = float(a["value"])
+            if not 0.0 <= v <= 1.0:
+                raise ValueError("volume 'value' must be 0.0..1.0")
+            player.volume = v
+            if v > 0 and muted:
+                muted = False
+                player.muted = False
+        elif "delta" in a:
+            player.volume = max(0.0, min(1.0, player.volume + float(a["delta"])))
+        else:
+            raise ValueError("volume needs 'value' (0.0..1.0) or 'delta'")
+        return {"volume": round(player.volume, 3)}
+
+    def api_cmd_muted(a):
+        nonlocal muted
+        want = a.get("value")
+        muted = (not muted) if want is None else bool(want)
+        player.muted = muted
+        return {"muted": muted}
+
+    def api_cmd_visualizer(a):
+        nonlocal vis_mode_idx
+        if a.get("next"):
+            vis_mode_idx = (vis_mode_idx + 1) % len(modes)
+            return {"mode": modes[vis_mode_idx], "modes": modes}
+        mode = a.get("mode")
+        if not mode:
+            return {"mode": modes[vis_mode_idx], "modes": modes}
+        m = str(mode).lower()
+        if m not in [x.lower() for x in modes]:
+            raise ValueError(f"unknown visualizer {mode!r}; have {modes}")
+        vis_mode_idx = [x.lower() for x in modes].index(m)
+        return {"mode": modes[vis_mode_idx]}
+
+    def api_cmd_video(a):
+        if a.get("off"):
+            video_slot.clear(by_user=True)
+            return {"video": "off"}
+        src = a.get("source")
+        if not src:
+            raise ValueError("video needs 'source' or 'off': true")
+        video_slot.request(src, sync_to=player.position() if player.track_path else 0.0)
+        return {"video": src, "pinned": True}
+
+    API_HANDLERS = {
+        "play": api_cmd_play, "pause": api_cmd_pause, "resume": api_cmd_resume,
+        "next": api_cmd_next, "prev": api_cmd_prev, "seek": api_cmd_seek,
+        "volume": api_cmd_volume, "muted": api_cmd_muted,
+        "visualizer": api_cmd_visualizer, "video": api_cmd_video,
+        "__tracks": api_cmd_tracks, "__search": api_cmd_search,
+    }
 
     # ---- action dispatch ------------------------------------------------
     # Every user-rebindable key funnels through here. Keeping one table means
@@ -1058,10 +1253,34 @@ def main():
         save_settings()
         return True
 
+    def do_rescan_folder():
+        """Adopt cfg["library_folder"] as the library and rebuild the list.
+
+        Separate from do_pick_folder because the setup wizard and the settings
+        panel can both set the folder without going through a native dialog.
+        """
+        nonlocal folder, selected
+        picked = (cfg.get("library_folder") or "").strip()
+        if not (picked and os.path.isdir(picked)):
+            return False
+        folder = picked
+        folders[0] = folder
+        tracks.clear()
+        scan_library(folders, tracks)
+        selected = 0
+        if tracks:
+            player.load(tracks[0]['path'])
+        return True
+
     def do_action(act, shifted=False):
-        nonlocal selected, muted, vis_mode_idx, chat_open, settings_open
+        nonlocal selected, muted, vis_mode_idx, api_open, settings_open
         nonlocal video_overlay_open, video_overlay_text, overlay_open, folder
-        nonlocal running
+        nonlocal running, setup_active
+        if setup_active:
+            # First-run wizard is modal. It owns the keyboard until it is done
+            # or skipped; a stray keypress must not change tracks or open the
+            # API panel behind it.
+            return
         if act == "select_prev":
             if tracks:
                 selected = (selected - 1) % len(tracks)
@@ -1089,10 +1308,15 @@ def main():
             player.muted = muted
         elif act == "cycle_visualizer":
             vis_mode_idx = (vis_mode_idx + 1) % len(modes)
-        elif act == "open_hermes":
-            chat_open = not chat_open
-            if chat_open:
-                pygame.key.start_text_input()
+        elif act in ("open_api", "open_hermes"):
+            # "open_hermes" is accepted as an alias: it is the name 1.0.x saved
+            # to settings.json, and a keymap on disk should never be a dead
+            # key just because the panel behind it got renamed.
+            api_open = not api_open
+            if api_open:
+                if api_panel is None:
+                    api_panel = ApiPanel(font, pygame.Rect(0, 0, w, h),
+                                         api.describe)
         elif act == "open_video":
             # V toggles the layer off; Shift+V (or V with nothing playing)
             # asks for an explicit path / .strm / URL.
@@ -1168,7 +1392,9 @@ def main():
     media_tap.start()
 
     running = True
+    frame_no = 0
     while running:
+        frame_no += 1
         t = time.time() - start_time
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1183,10 +1409,24 @@ def main():
                 base_y = h - 90
                 hint_surf = render_hint()
                 hint_w = hint_surf.get_width()
-                if chat_open:
-                    chat_panel.rect = pygame.Rect(0, 0, w, h)
+                if api_open:
+                    api_panel.rect = pygame.Rect(0, 0, w, h)
+                if settings_open and settings_panel is not None:
+                    settings_panel.rect = getattr(settings_panel, "rect", None)
                 push_notice(("info", f"resized to {w}x{h}"))
             elif event.type == pygame.KEYDOWN:
+                if setup_active:
+                    # Modal first-run wizard: it consumes the key and nothing
+                    # else sees it, so no keymap action fires behind it.
+                    outcome = setup_wizard.handle_key(event)
+                    if outcome == "changed":
+                        # A folder was accepted partway through the flow; the
+                        # list should be real behind the remaining steps, not
+                        # empty until the final Enter.
+                        do_rescan_folder()
+                    elif outcome in ("done", "skipped"):
+                        setup_active = setup_wizard.is_active()
+                    continue
                 if settings_open and settings_panel is not None:
                     # The panel owns every key while it is open, so a rebind
                     # capture cannot be stolen by a normal binding.
@@ -1198,10 +1438,9 @@ def main():
                         save_settings()
                     settings_open = settings_panel.is_open()
                     continue
-                if chat_open:
-                    # the chat panel owns every key while it is open
-                    if chat_panel.handle_key(event) == "close":
-                        chat_open = False
+                if api_open:
+                    if api_panel.handle_key(event) == "close":
+                        api_open = False
                     continue
                 if video_overlay_open:
                     # paste a video path, a .strm file, or a web URL
@@ -1444,6 +1683,39 @@ def main():
         bg_val = int(20 + 10 * math.sin(t * 0.2))
         screen.fill((bg_val, bg_val // 2 + 6, bg_val + 14))
 
+        # ---- control API, serviced on the main thread --------------------
+        # Order matters: publish state first so a command that reads /status
+        # sees this frame, then drain, so the HTTP thread's reply is sent the
+        # same frame. Both must be here, not in the HTTP thread, because SDL
+        # is not thread-safe.
+        api.publish({
+            "playing": bool(player.track_path) and not player.paused,
+            "paused": bool(player.paused),
+            "track": _cur().get("title"),
+            "artist": _cur().get("artist"),
+            "index": selected,
+            "position": _safe_position(player),
+            "volume": _safe_volume(player),
+            "muted": muted,
+            "visualizer": modes[vis_mode_idx],
+            "visualizers": modes,
+            "video": (video_slot.message or ("playing" if video_slot.is_active()
+                                             else "off")),
+            "track_count": len(tracks),
+            "library_folder": folder,
+            # An agent polling /status can tell it needs to wait for the user
+            # rather than assuming the player is broken.
+            "setup_pending": bool(setup_active),
+            "api": {"host": api.host, "port": api.port, "version": 1},
+            # A monotonically rising frame number. An agent polling /status
+            # can tell a busy app from a wedged one: if this stops moving, the
+            # main loop is not turning over and no command will ever be
+            # serviced. Cheaper and more honest than inferring it from a
+            # stalled playhead.
+            "frame": frame_no,
+        })
+        api.drain(API_HANDLERS)
+
         # Draw visualizer. The video slot follows the selected track so a
         # sidecar appears on its own; a pinned source ignores track changes.
         current_metadata = tracks[selected] if tracks else {}
@@ -1455,23 +1727,6 @@ def main():
         # Draw UI
         draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
                 folder, hover_idx)
-
-        # Draw the interactive Hermes chat on top when it is open
-        if chat_open:
-            cur = tracks[selected] if tracks else {}
-            cur_title = cur.get('title') or "nothing"
-            cur_artist = cur.get('artist') or "unknown artist"
-            chat_panel.context = (
-                "You are embedded in the NCS Music Launcher, a pygame music "
-                "player. Current track: "
-                f"'{cur_title}' by {cur_artist}. "
-                f"State: {'paused' if player.paused else 'playing'}, "
-                f"visualizer mode: {modes[vis_mode_idx]}, "
-                f"{len(tracks)} track(s) in the library at {folder}."
-            )
-            chat_panel.poll()
-            chat_panel.draw(screen, t, w, h)
-
         # Draw torrent overlay
         if torrents:
             statuses = torrents.status_lines()
@@ -1480,6 +1735,10 @@ def main():
             elif overlay_open:
                 draw_torrent_overlay(screen, font, w, h, overlay_text, statuses, None)
 
+        # Draw the control-API panel on top when it is open
+        if api_open:
+            api_panel.draw(screen, t, w, h)
+
         # Draw the video-source overlay above everything else
         if video_overlay_open:
             draw_video_overlay(screen, font, w, h, video_overlay_text)
@@ -1487,6 +1746,11 @@ def main():
         # Settings sits on top of the video prompt: it is modal.
         if settings_open and settings_panel is not None:
             settings_panel.draw(screen, font=font, w=w, h=h)
+
+        # The first-run wizard is the most modal thing here: it covers the
+        # whole window, and nothing underneath should look interactive.
+        if setup_active and setup_wizard.is_active():
+            setup_wizard.draw(screen, font=font, w=w, h=h)
 
         # Draw hint
         if show_hints:

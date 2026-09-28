@@ -59,7 +59,7 @@ ACTIONS = {
     "seek_forward": {"label": "Seek forward", "group": "Playback"},
     "toggle_mute": {"label": "Toggle mute", "group": "Playback"},
     "cycle_visualizer": {"label": "Cycle visualizer", "group": "View"},
-    "open_hermes": {"label": "Open Hermes", "group": "View"},
+    "open_api": {"label": "Open Control API", "group": "View"},
     "open_video": {"label": "Open video / visual", "group": "View"},
     "open_torrent": {"label": "Torrent downloads", "group": "Library"},
     "open_folder": {"label": "Open library folder", "group": "Library"},

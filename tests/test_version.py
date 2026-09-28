@@ -59,7 +59,12 @@ def main():
     assert version.is_newer("1.0.0", "1.0.0") is False
     assert version.is_newer("0.9.9", "1.0.0") is False
     assert version.is_newer("2.0", "1.9.9") is True
-    assert version.is_newer("1.0.1") is True, "default current=APP_VERSION"
+    # The default `current` is APP_VERSION, so this asks "is the CANDIDATE
+    # newer than the running build". It therefore needs a version no build
+    # will ever reach, not the previous release -- pinning 1.0.1 here made
+    # the test fail the moment the version moved past it, which says nothing
+    # about the code under test.
+    assert version.is_newer("999.0.0") is True, "default current=APP_VERSION"
     assert version.is_newer("0.0.1") is False
     assert version.is_newer(version.APP_VERSION) is False, "never newer than itself"
     assert version.is_newer("nonsense") is False

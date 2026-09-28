@@ -18,7 +18,11 @@ import json
 import os
 
 # Home, not CWD: the frozen bundle's directory is read-only.
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".ncs-smlauncher")
+# HASHPLAY_CONFIG_DIR overrides it so a test -- or someone who wants a
+# throwaway profile -- can point the whole app somewhere disposable instead of
+# writing into the real one.
+CONFIG_DIR = os.environ.get("HASHPLAY_CONFIG_DIR") or os.path.join(
+    os.path.expanduser("~"), ".ncs-smlauncher")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 # Canonical default bindings. Names are pygame K_* suffixes ("UP", "SPACE"),
@@ -33,7 +37,7 @@ DEFAULT_KEYMAP = {
     "seek_forward": "RIGHT",
     "toggle_mute": "M",
     "cycle_visualizer": "F",
-    "open_hermes": "C",
+    "open_api": "C",
     "open_torrent": "T",
     "open_folder": "O",
     "open_settings": "COMMA",
@@ -48,6 +52,14 @@ DEFAULT_CONFIG = {
     "easter_eggs": True,
     "schema_version": 0,
     "keymap": {},
+    # Control API (src/control_api.py). The host is deliberately not
+    # configurable to anything but loopback: this endpoint can change what the
+    # speakers do, so exposing it on a LAN interface would hand volume control
+    # to anyone on the network. The port is free to move if 8777 is taken.
+    "api_enabled": True,
+    "api_host": "127.0.0.1",
+    "api_port": int(os.environ.get("HASHPLAY_API_PORT") or 8777),
+    "setup_complete": False,
 }
 
 
