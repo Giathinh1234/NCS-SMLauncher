@@ -82,6 +82,11 @@ SAMPLE_RATE = 44100
 FFT_SIZE = 2048
 NUM_BARS = 64
 
+# How long the first Esc stays "armed" for the second one. Long enough to
+# press twice on purpose, short enough that a stray Esc ten seconds later
+# does not quit the app.
+QUIT_CONFIRM_SECS = 2.5
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 TORRENT_DIR = os.path.join(APP_DIR, "torrent-downloads")
 TORRENT_STATE_DIR = os.path.join(TORRENT_DIR, ".state")
@@ -161,7 +166,7 @@ class TorrentManager:
             try:
                 st = h.status()
                 if st.is_seeding or st.is_finished:
-                    txt = f"✔ done: {st.name}"
+                    txt = f"ok done: {st.name}"
                     with self.lock:
                         self.handles.pop(key, None)   # finished; stop tracking
                 else:
@@ -814,6 +819,17 @@ def draw_video_overlay(screen, font, w, h, text):
         screen.blit(warn, (w // 2 - warn.get_width() // 2, h // 2 + 136))
 
 
+def torrent_close_rect(font, w, h):
+    """Where the X sits, in window coordinates. Shared by draw and hit-test.
+
+    Returns a square Rect big enough to click comfortably -- a 12px glyph is a
+    cruel click target, and this used to have no target at all.
+    """
+    ow, oh = 700, 240
+    ox, oy = (w - ow) // 2, (h - oh) // 2 - 50
+    return pygame.Rect(ox + ow - 44, oy + 10, 34, 30)
+
+
 def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
     ow, oh = 700, 240
     ox, oy = (w - ow) // 2, (h - oh) // 2 - 50
@@ -826,6 +842,21 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
                        (0, 230, 190))
     screen.blit(head, (ox + 20, oy + 14))
 
+    # A visible close control. The panel used to be dismissible only by
+    # pressing ESC -- and because the panel kept drawing itself after a
+    # download finished, ESC mostly reached the app-wide quit handler instead
+    # and closed the program. Now the way out is drawn on the thing you are
+    # trying to close. Plain "x", not "✕": the monospace face the launcher
+    # resolves has no glyph for U+2715 and renders tofu boxes.
+    close = torrent_close_rect(font, w, h)
+    hover = close.collidepoint(pygame.mouse.get_pos())
+    xcol = (255, 120, 120) if hover else (150, 155, 170)
+    pygame.draw.rect(screen, (255, 90, 90, 60) if hover else (40, 44, 60),
+                     close, border_radius=5)
+    xsurf = font.render("x", True, xcol)
+    screen.blit(xsurf, (close.centerx - xsurf.get_width() // 2,
+                        close.centery - xsurf.get_height() // 2))
+
     box = pygame.Rect(ox + 20, oy + 44, ow - 40, 40)
     pygame.draw.rect(screen, (26, 30, 44), box, border_radius=6)
     pygame.draw.rect(screen, (60, 70, 95), box, 1, border_radius=6)
@@ -836,7 +867,10 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
 
     y = oy + 100
     for s in statuses:
-        col = (0, 230, 190) if s.startswith(("✔", "done")) else (170, 200, 230)
+        # "ok", not "✔": U+2714 has no glyph in the monospace face the
+        # launcher resolves and rendered as a tofu box.
+        done = s.startswith(("ok", "done"))
+        col = (0, 230, 190) if done else (170, 200, 230)
         screen.blit(font.render(s, True, col), (ox + 20, y))
         y += 22
     if notice:
@@ -844,7 +878,7 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
                 "error": (255, 110, 110)}.get(notice[0], (200, 200, 200))
         screen.blit(font.render(notice[1][:70], True, colr), (ox + 20, oy + oh - 56))
 
-    tip = font.render("Enter start · Esc close", True, (130, 135, 150))
+    tip = font.render("Enter start · Esc or x close", True, (130, 135, 150))
     screen.blit(tip, (ox + 20, oy + oh - 30))
 
 
@@ -939,6 +973,19 @@ def main():
 
     overlay_open = False
     overlay_text = ""
+
+    # ---- quitting needs intent ------------------------------------------
+    # ESC used to quit the app from any non-modal state, so a stray ESC aimed
+    # at a panel -- the torrent list, say -- closed the app instead. Quitting
+    # now takes two ESC presses within QUIT_CONFIRM_SECS; anything else
+    # disarms it. Q is untouched: it is a deliberate binding, not a reflex
+    # key you hit while aiming at something else.
+    quit_armed_until = 0.0
+
+    # The torrent list used to be drawn whenever a session existed, so it
+    # stayed on screen -- and kept intercepting ESC -- long after you were
+    # done with it. Dismissing it is explicit now; T brings it back.
+    torrents_dismissed = False
     last_scan = 0.0
     notice = None          # (kind, text)
     notice_until = 0.0
@@ -1482,10 +1529,36 @@ def main():
                     elif event.unicode and event.unicode.isprintable():
                         overlay_text += event.unicode
                     continue
-                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                # Disarm a pending quit-confirm on any key that is not ESC.
+                # Done as a statement rather than an `elif` in the chain below,
+                # so the key still does its job -- an `elif` here would swallow
+                # it, and T would stop opening the torrent box.
+                if (event.key != pygame.K_ESCAPE
+                        and time.time() < quit_armed_until):
+                    quit_armed_until = 0.0
+                if event.key == pygame.K_ESCAPE:
+                    # Layered dismissal, most-specific first. ESC used to fall
+                    # straight through to `running = False` whenever the
+                    # torrent *list* was merely visible, so the natural thing
+                    # to do -- ESC the box you are looking at -- killed the
+                    # app. Each layer gets a chance to consume it; only when
+                    # nothing is open does ESC mean "quit", and then it has to
+                    # be pressed twice.
+                    if overlay_open:
+                        overlay_open = False
+                        overlay_text = ""
+                    elif torrents and not torrents_dismissed:
+                        torrents_dismissed = True
+                    elif time.time() < quit_armed_until:
+                        running = False
+                    else:
+                        quit_armed_until = time.time() + QUIT_CONFIRM_SECS
+                        push_notice(("warn", "press Esc again to quit"), 2.0)
+                elif event.key == pygame.K_q:
                     running = False
                 elif event.key == pygame.K_t:
                     overlay_open = True
+                    torrents_dismissed = False
                     pygame.key.start_text_input()
                 elif event.key == pygame.K_v:
                     # V toggles the video layer; Shift+V (or V while it is
@@ -1618,9 +1691,20 @@ def main():
                 else:
                     pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                # The torrent panel's X, checked before anything else so a
+                # click on it can never fall through to the playlist rows
+                # underneath. Available whether or not the text prompt is
+                # open, because the list stays up after a download finishes.
+                if torrents and not (torrents_dismissed and not overlay_open) \
+                        and torrent_close_rect(font, w, h).collidepoint((mx, my)):
+                    overlay_open = False
+                    overlay_text = ""
+                    torrents_dismissed = True
+                    quit_armed_until = 0.0
+                    continue
                 if overlay_open:
                     continue
-                mx, my = event.pos
                 max_visible_rows = max(1, (h - 170) // 26)
                 # click playlist rows
                 if 24 <= mx <= 364 and 62 <= my <= 62 + max_visible_rows * 26:
@@ -1727,13 +1811,14 @@ def main():
         # Draw UI
         draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,
                 folder, hover_idx)
-        # Draw torrent overlay
-        if torrents:
+        # Draw torrent overlay. Gated on the panel not being dismissed: the
+        # input prompt still shows (it is modal), but a finished download no
+        # longer parks a panel over the app waiting to eat an ESC.
+        if torrents and not (torrents_dismissed and not overlay_open):
             statuses = torrents.status_lines()
-            if notice:
-                draw_torrent_overlay(screen, font, w, h, overlay_text, statuses, notice)
-            elif overlay_open:
-                draw_torrent_overlay(screen, font, w, h, overlay_text, statuses, None)
+            if notice or overlay_open:
+                draw_torrent_overlay(screen, font, w, h, overlay_text, statuses,
+                                     notice)
 
         # Draw the control-API panel on top when it is open
         if api_open:
@@ -1763,6 +1848,21 @@ def main():
                 screen.blit(short, (24, hy))
             else:
                 screen.blit(hint_surf, (hx, hy))
+
+        # The first ESC arms a quit. Make that visible: a confirm you cannot
+        # see is just an unresponsive app.
+        if time.time() < quit_armed_until:
+            left = quit_armed_until - time.time()
+            box = font.render(f"press Esc again to quit  ({left:.1f}s)",
+                              True, (255, 190, 90))
+            bw, bh = box.get_width() + 40, box.get_height() + 24
+            bx, by = (w - bw) // 2, int(h * 0.32)
+            shade = pygame.Surface((bw, bh), pygame.SRCALPHA)
+            shade.fill((24, 18, 8, 235))
+            screen.blit(shade, (bx, by))
+            pygame.draw.rect(screen, (255, 190, 90), (bx, by, bw, bh), 2,
+                             border_radius=8)
+            screen.blit(box, (bx + 20, by + 12))
 
         pygame.display.flip()
         clock.tick(60)

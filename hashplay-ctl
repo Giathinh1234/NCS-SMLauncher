@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""hashplay-ctl -- drive HashPlay from the command line, or from any agent.
+
+This is the whole point of the control API: the app exposes a loopback HTTP
+endpoint so anything on this machine can control playback. This script is one
+such client, and doubles as a worked example of the four calls that matter.
+
+    hashplay-ctl status
+    hashplay-ctl list
+    hashplay-ctl find drift
+    hashplay-ctl play "some song"
+    hashplay-ctl play 3
+    hashplay-ctl pause | resume | next | prev
+    hashplay-ctl seek 30
+    hashplay-ctl volume 0.4
+    hashplay-ctl mute on
+    hashplay-ctl visualizer bars
+    hashplay-ctl video ~/clips/visual.mp4
+
+The token is read from the same file the app wrote, so nothing has to be
+passed on the command line (which would put it in your shell history).
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get("HASHPLAY_API", "http://127.0.0.1:8777")
+TOKEN_PATH = os.environ.get(
+    "HASHPLAY_TOKEN",
+    os.path.join(os.path.expanduser("~"), ".ncs-smlauncher", "api_token"))
+
+
+def token():
+    try:
+        with open(TOKEN_PATH, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        sys.exit(f"no token at {TOKEN_PATH}\n"
+                 f"is HashPlay running? (it writes this file on startup)")
+
+
+def call(path, body=None, method=None):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method or ("POST" if body is not None else "GET"))
+    req.add_header("Authorization", f"Bearer {token()}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode() or "{}")
+    except urllib.error.URLError as e:
+        sys.exit(f"cannot reach {BASE} ({e.reason})\n"
+                 f"is HashPlay running?")
+
+
+def ok(label, payload):
+    if isinstance(payload, dict) and "track" in payload:
+        print(f"  {label}: {payload.get('track')}")
+    else:
+        print(f"  {label}: {json.dumps(payload, default=str)[:160]}")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        return
+    cmd, rest = args[0], args[1:]
+
+    if cmd == "status":
+        s, b = call("/status")
+        r = b.get("result") or {}
+        state = "playing" if r.get("playing") else (
+            "paused" if r.get("paused") else "idle")
+        print(f"  {state}: {r.get('track') or 'nothing loaded'}")
+        for k in ("artist", "index", "position", "volume", "muted",
+                  "visualizer", "video", "track_count", "library_folder",
+                  "setup_pending"):
+            if k in r:
+                print(f"  {k:15} {r.get(k)}")
+        return
+
+    if cmd == "list":
+        s, b = call("/tracks")
+        for t in b.get("result") or []:
+            print(f"  {t['index']:3}  {t.get('title') or ''}"
+                  f"{'  -- ' + t['artist'] if t.get('artist') else ''}")
+        return
+
+    if cmd == "find" and rest:
+        s, b = call(f"/tracks/search?q={urllib.request.quote(rest[0])}")
+        r = b.get("result") or {}
+        print(f"  {r.get('count', 0)} match(es) for {rest[0]!r}")
+        for t in r.get("results") or []:
+            print(f"  {t['index']:3}  {t.get('title') or ''}"
+                  f"{'  -- ' + t['artist'] if t.get('artist') else ''}")
+        return
+
+    if cmd == "play" and rest:
+        arg = rest[0]
+        body = {"index": int(arg)} if arg.isdigit() else {"query": arg}
+        s, b = call("/play", body)
+        ok("play" if s == 200 else "error", b.get("result") or b.get("error"))
+        return
+
+    if cmd in ("pause", "resume", "next", "prev"):
+        s, b = call(f"/{cmd}", {})
+        ok(cmd if s == 200 else "error", b.get("result") or b.get("error"))
+        return
+
+    if cmd == "seek" and rest:
+        s, b = call("/seek", {"seconds": float(rest[0])})
+        ok("seek" if s == 200 else "error", b.get("result") or b.get("error"))
+        return
+
+    if cmd == "volume" and rest:
+        s, b = call("/volume", {"value": float(rest[0])})
+        ok("volume" if s == 200 else "error",
+           b.get("result") or b.get("error"))
+        return
+
+    if cmd == "mute" and rest:
+        want = rest[0].lower() in ("on", "1", "true", "yes")
+        s, b = call("/muted", {"value": want})
+        ok("mute" if s == 200 else "error", b.get("result") or b.get("error"))
+        return
+
+    if cmd == "visualizer" and rest:
+        s, b = call("/visualizer", {"mode": rest[0]})
+        ok("visualizer" if s == 200 else "error",
+           b.get("result") or b.get("error"))
+        return
+
+    if cmd == "video":
+        s, b = call("/video", {"off": True} if (rest and rest[0] == "off")
+                    else {"source": rest[0] if rest else ""})
+        ok("video" if s == 200 else "error", b.get("result") or b.get("error"))
+        return
+
+    print(__doc__)
+
+
+if __name__ == "__main__":
+    main()
