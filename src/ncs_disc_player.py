@@ -80,7 +80,12 @@ def get_track_metadata(filepath):
                     if isinstance(tag, APIC):
                         album_art = bytes(tag)
                         break
-        except:
+        # Album art is optional, so failing to read it is not an error worth
+        # propagating. But this was a bare `except:`, which also swallows
+        # KeyboardInterrupt and SystemExit -- so ^C during a library scan could
+        # be silently eaten and the scan would carry on. `except Exception`
+        # keeps the fallback without catching the exits.
+        except Exception:
             pass
             
         return {
