@@ -1004,7 +1004,12 @@ def main():
     # cfg was already loaded (and migrated) above, before the folder was
     # chosen, so the saved library_folder could be honoured.
     keymap = appactions.Keymap(cfg.get("keymap") or {})
-    show_hints = bool(cfg.get("show_hints", True))
+    # Read straight from cfg where it is drawn, not from this snapshot. The
+    # snapshot was taken once at startup, while the settings panel mutates
+    # cfg["show_hints"] in place -- so unchecking "Show control hints" toggled
+    # and saved correctly and then appeared to do nothing until the next
+    # launch. The panel also flags a conflict without saying which side won,
+    # which this indirection is what created.
     settings_open = False
     settings_panel = None               # built lazily, needs the font
 
@@ -1603,18 +1608,16 @@ def main():
                         video_overlay_text = ""
                         pygame.key.start_text_input()
                 elif event.key == pygame.K_o:
-                    picked = pick_folder_dialog(folder)
-                    if picked and os.path.isdir(picked):
-                        folder = picked
-                        folders[0] = folder
-                        tracks.clear()
-                        scan_library(folders, tracks)
-                        selected = 0
-                        if tracks:
-                            player.load(tracks[0]['path'])
+                    # Was a hand-copied duplicate of do_pick_folder that
+                    # omitted the two lines that make the choice stick:
+                    # cfg["library_folder"] = folder and save_settings(). So
+                    # the O key -- which the on-screen hint advertises as
+                    # "[O to change]" -- rescanned, showed the new library,
+                    # and then forgot it on the next launch, while the same
+                    # action from the settings panel remembered. One
+                    # implementation, three callers.
+                    if do_pick_folder():
                         push_notice(("info", f"library: {folder}"))
-                    else:
-                        push_notice(("info", "folder picker cancelled"))
                 elif event.key == pygame.K_UP:
                     if tracks:
                         selected = (selected - 1) % len(tracks)
@@ -1753,16 +1756,9 @@ def main():
                     continue
                 # click source label → change folder
                 if folder and 20 <= my <= 42 and mx > w - 460:
-                    picked = pick_folder_dialog(folder)
-                    if picked and os.path.isdir(picked):
-                        folder = picked
-                        folders[0] = folder
-                        tracks.clear()
-                        scan_library(folders, tracks)
-                        selected = 0
-                        if tracks:
-                            player.load(tracks[0]['path'])
-                        push_notice(("info", f"library: {folder}"))
+                    # Third hand-rolled copy of this block, with the same
+                    # missing persistence. Routed through do_pick_folder too.
+                    do_pick_folder()
                     continue
                 # click transport buttons (bottom-left icons drawn as text zones)
                 btn_zone = pygame.Rect(w - hint_w - 24, h - 30, hint_w + 10, 26)
@@ -1864,7 +1860,7 @@ def main():
             setup_wizard.draw(screen, font=font, w=w, h=h)
 
         # Draw hint
-        if show_hints:
+        if bool(cfg.get("show_hints", True)):
             hint_surf = render_hint()
             hx, hy = w - hint_w - 24, h - 24
             if hx < 24:                   # too narrow for the full hint

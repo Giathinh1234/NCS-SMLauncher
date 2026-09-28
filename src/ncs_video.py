@@ -294,6 +294,17 @@ class VideoVisual:
                     proc.wait(timeout=1.0)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    # The kill() above was never followed by a wait(), so the
+                    # process was killed but never reaped: it sat in the table
+                    # as a Z <defunct> zombie until some later Popen happened
+                    # to reap it. That is exactly the wrong time to find out,
+                    # because a video storm closes one ffmpeg per frame and
+                    # nothing else is spawning anything to tidy up after it.
+                    try:
+                        proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        print("ffmpeg would not die after SIGKILL; giving up "
+                              "on reaping it")
         except OSError:
             pass
 
