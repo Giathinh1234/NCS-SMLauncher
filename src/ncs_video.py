@@ -668,13 +668,20 @@ class VideoSlot:
             except Exception:
                 pos = None
             if pos is not None and abs(pos - self._seeked_to) > 1.0:
-                if getattr(self.visual, "duration", 0.0):
-                    wrapped = pos % self.visual.duration
-                else:
-                    wrapped = pos
+                dur = getattr(self.visual, "duration", 0.0)
+                wrapped = pos % dur if dur else pos
                 try:
                     self.visual.seek(wrapped)
-                    self._seeked_to = wrapped
+                    # Record the RAW position, not the wrapped one. The
+                    # comparison above is against a raw playhead, so storing a
+                    # wrapped value put the two in different domains: once
+                    # pos passed the video's duration they disagreed by ~the
+                    # whole duration, forever, and the condition was true on
+                    # every single frame. Measured on a 6s clip with pos=20:
+                    # 60 ffmpeg spawns and 14.6s of work per second of frames,
+                    # versus 1 spawn. Any sidecar shorter than its track hit
+                    # this, which is the common case.
+                    self._seeked_to = pos
                 except Exception:
                     pass
 

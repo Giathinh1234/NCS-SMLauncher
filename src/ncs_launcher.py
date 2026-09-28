@@ -200,6 +200,10 @@ def decode_file(path):
     return samples
 
 
+class AudioError(Exception):
+    """A track could not be decoded. Carries a message fit for the UI."""
+
+
 class Player(threading.Thread):
     """Streams decoded audio through sounddevice while tracking position."""
 
@@ -209,6 +213,9 @@ class Player(threading.Thread):
         self.pos = 0
         self.paused = True
         self.muted = False
+        # Set by main() to the UI's notice channel. Declared here so load()
+        # stays total even before anything has been wired up.
+        self.on_load_error = None
         # Output gain, 0.0..1.0. Applied in the callback so the control API
         # has a real volume to set -- previously the stream wrote raw samples
         # at full scale and only `muted` existed, so /volume would have been a
@@ -230,7 +237,14 @@ class Player(threading.Thread):
                 out[:len(chunk), 0] = chunk
                 self.pos += len(chunk)
                 if self.pos >= len(self.samples):
-                    self.pos = len(self.samples) - 1   # hold at end; UI advances
+                    self.pos = len(self.samples) - 1   # hold at end
+                    # The main loop's player.finished() check is what
+                    # steps to the next track; this callback just parks
+                    # and stops emitting, so the last sample is not
+                    # looped. The old comment here credited a UI that did
+                    # not exist: there was no end-of-track check anywhere
+                    # in the program, so the app sat on the final sample
+                    # showing NOW PLAYING until you pressed next yourself.
                 if len(chunk):
                     self.ring = np.roll(self.ring, -len(chunk))
                     self.ring[-len(chunk):] = chunk
@@ -244,12 +258,53 @@ class Player(threading.Thread):
         outdata[:] = out
 
     def load(self, path):
-        samples = decode_file(path)
+        """Decode a track and start it. Returns True, or False and reports.
+
+        Never raises. miniaudio raises DecodeError on a truncated, zero-length
+        or otherwise corrupt file, and this had 18 call sites -- click
+        handlers, key handlers, the scan-then-play startup path, the API
+        endpoints -- none of which wrapped it. One bad file in a 200-track
+        library therefore took the whole app down on the frame it was first
+        touched, and via /play it surfaced as a 500 with the player left in a
+        half-loaded state. The repo shipped music/test.mp3, a 0-byte file, so
+        this was reachable out of the box.
+
+        Making load() itself total fixes all 18 sites at once, and keeps the
+        behaviour uniform: a track that will not decode is reported and
+        skipped, never fatal. `on_load_error` is the launcher's notice
+        channel; Player is module-level and push_notice lives inside main(),
+        so the hook is the bridge between them.
+        """
+        try:
+            samples = decode_file(path)
+        except Exception as e:
+            msg = f"cannot play {os.path.basename(path)}: {e}"
+            if self.on_load_error:
+                self.on_load_error(msg)
+            else:
+                print(msg)
+            return False
         with self.lock:
             self.samples = samples
             self.pos = 0
             self.track_path = path
             self.paused = False
+        return True
+
+    def finished(self):
+        """True once the playhead has run off the end of the track.
+
+        The audio callback parks self.pos at len(samples)-1 and stays there,
+        so nothing else in the program ever noticed that a track was over.
+        The comment beside that line credited the UI with advancing the
+        playhead, but no advance existed anywhere: the app played one track,
+        held the last sample forever, and showed NOW PLAYING until you
+        pressed next yourself.
+        """
+        with self.lock:
+            if self.samples is None or self.paused:
+                return False
+            return self.pos >= len(self.samples) - 1
 
     def toggle_pause(self):
         if self.samples is not None:
@@ -960,6 +1015,12 @@ def main():
     torrents = TorrentManager() if lt is not None else None
 
     selected = 0
+    # The media-key sync box is created here, next to the selection it
+    # mirrors, rather than later in the startup sequence. It has to exist
+    # before the first thing that can reset the selection, or that reset
+    # leaves the box pointing at a track index from before the library was
+    # even scanned.
+    nonlocal_selected = [selected]  # for media_key sync
     vis_mode_idx = 0
     modes = ["bars", "mirror", "radial", "disc", "album", "video"]
     # The video layer. ffmpeg must exist or the key is refused with a reason
@@ -1035,6 +1096,9 @@ def main():
         notice = entry
         notice_until = time.time() + duration
 
+    # A track that will not decode must not be fatal, and must be visible.
+    player.on_load_error = lambda msg: push_notice(("error", msg), 5.0)
+
     # ---- control API ----------------------------------------------------
     # Replaces the 1.0.x Hermes chat panel. Loopback HTTP so any agent on this
     # machine -- Claude Code, OpenCode, a script, curl -- can control playback
@@ -1090,7 +1154,8 @@ def main():
     if not setup_active:
         setup_wizard.active = False
 
-    nonlocal_selected = [selected]  # for media_key sync
+    # nonlocal_selected is created alongside `selected` near the top of main()
+    # so that every reset of the selection has a box to reset too.
 
     # ---- API command handlers -------------------------------------------
     # These run on the MAIN thread, called from api.drain() once per frame.
@@ -1321,6 +1386,11 @@ def main():
         tracks.clear()
         scan_library(folders, tracks)
         selected = 0
+        # Keep the media-key box in step. It is read at the top of the
+        # loop as the authoritative selection, so a rescan that reset only
+        # `selected` left the box pointing past the end of a shorter
+        # library -- an uncaught IndexError on the next frame.
+        nonlocal_selected[0] = 0
         if tracks:
             player.load(tracks[0]['path'])
         push_notice(("info", f"library: {folder}"))
@@ -1342,6 +1412,7 @@ def main():
         tracks.clear()
         scan_library(folders, tracks)
         selected = 0
+        nonlocal_selected[0] = 0
         if tracks:
             player.load(tracks[0]['path'])
         return True
@@ -1471,9 +1542,49 @@ def main():
 
     running = True
     frame_no = 0
+    # Guards the automatic advance at the top of the loop, so a track that
+    # fails to decode does not spin us through the rest of the library at
+    # 60 steps per second.
+    _advance_cooldown = 0.0
     while running:
         frame_no += 1
         t = time.time() - start_time
+
+        # ---- advance when a track runs out ----------------------------
+        # The audio callback parks pos at len(samples)-1 and stops, so
+        # nothing anywhere noticed a track had ended: the player held the
+        # final sample forever and the UI said NOW PLAYING until you
+        # pressed next by hand. There was no auto-advance in the program.
+        # Wrapped in a cooldown because a track that will not decode returns
+        # finished immediately, and without the guard this would step through
+        # the entire library in a single frame.
+        now = time.time()
+        # Only genuinely-modal things suppress the advance. The torrent
+        # panel is deliberately NOT in this list: torrents_dismissed starts
+        # False and means "not dismissed", not "open", so including it as
+        # `not torrents_dismissed` made this guard permanently true and
+        # silently disabled the feature it was written to guard.
+        modal_open = (settings_open or api_open or video_overlay_open
+                      or overlay_open          # the infohash prompt
+                      or setup_wizard.active)
+        if (tracks and player.track_path and now >= _advance_cooldown
+                and not modal_open):
+            if player.finished():
+                selected = (selected + 1) % len(tracks)
+                nonlocal_selected[0] = selected
+                if player.load(tracks[selected]['path']):
+                    _advance_cooldown = now + 0.25
+                else:
+                    # That track is broken too. Skip it and try the next.
+                    _advance_cooldown = now + 0.05
+                    for _ in range(len(tracks)):
+                        selected = (selected + 1) % len(tracks)
+                        nonlocal_selected[0] = selected
+                        if player.load(tracks[selected]['path']):
+                            break
+                    else:
+                        _advance_cooldown = now + 2.0
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
