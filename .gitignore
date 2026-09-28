@@ -125,3 +125,13 @@ android/.kotlin/
 android/local.properties
 # Local test scratch
 tests/__pycache__/
+
+# Ad-hoc manual copies of source files. Git history already keeps every
+# version, so a .backup file in the tree is pure clutter -- three of these
+# had been committed. Keep backups in git, not in filenames.
+*.backup
+*.backup_*
+*.bak
+*.orig
+*.rej
+.DS_Store

@@ -1045,7 +1045,15 @@ def main():
         enabled=bool(cfg.get("api_enabled", True)),
     )
     if api.enabled and not api.start():
-        push_notice(("error", f"control API: {api.last_error}"), 8.0)
+        # Both on screen AND in the log. A bind failure used to be an 8-second
+        # toast and nothing else: miss it and the app looks completely normal
+        # while having no remote control at all, which is the hardest kind of
+        # failure to notice. The panel (C) also shows it, but nobody presses C
+        # when the feature they are not using is the thing that is broken.
+        why = f"control API unavailable: {api.last_error}"
+        print(why)
+        print(why, file=sys.stderr)
+        push_notice(("error", f"{why} -- remote control is off"), 10.0)
     api_open = False
     api_panel = None               # built lazily, needs the font
 
