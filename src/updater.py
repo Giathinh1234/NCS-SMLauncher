@@ -576,7 +576,7 @@ def _log(msg):  # pragma: no cover - convenience for manual runs
     sys.stderr.write("[updater] %s\n" % msg)
 
 
-def self_update(include_prerelease=True, base_dir=None, target=None,
+def self_update(include_prerelease=False, base_dir=None, target=None,
                 timeout=TIMEOUT, log=_log):
     """The whole opt-in flow: check -> download -> verify -> stage.
 
@@ -584,7 +584,13 @@ def self_update(include_prerelease=True, base_dir=None, target=None,
     touches the installed app; the swap happens on the next launch via
     :func:`apply_pending`.
     """
-    info = fetch_latest(include_prerelease=include_prerelease, timeout=timeout)
+    # `current` has to be passed. Without it parse_release(release, None)
+    # returns None for every release, so fetch_latest returned None and
+    # self_update reported "no update available" for every release ever
+    # published -- independently of the asset-name bug.
+    info = fetch_latest(current=_current_version(),
+                        include_prerelease=include_prerelease,
+                        timeout=timeout)
     if info is None:
         return None
     if info.digest is None and info.size is None:
