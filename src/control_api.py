@@ -53,6 +53,7 @@ DEFAULT_PORT = 8777
 # Bounded so one bad agent cannot grow the process without limit. A queue that
 # only ever grows is a slow memory leak with extra steps.
 MAX_PENDING = 64
+MAX_BODY = 64 * 1024        # a control command is never this big
 
 
 def probe_dependencies():
@@ -80,7 +81,7 @@ def probe_dependencies():
 class _Request:
     """One pending call from the HTTP thread to the main loop."""
 
-    __slots__ = ("name", "args", "event", "result", "error")
+    __slots__ = ("name", "args", "event", "result", "error", "cancelled")
 
     def __init__(self, name, args):
         self.name = name
@@ -88,6 +89,12 @@ class _Request:
         self.event = threading.Event()
         self.result = None
         self.error = None
+        # Set when the HTTP thread gave up waiting. The main loop must then
+        # drop the command rather than run it: the client already saw a 504,
+        # so executing it anyway means the caller's retry double-applies. That
+        # was live -- a `play` that timed out still loaded the track 2.5s
+        # later, and a retried `next` skipped two.
+        self.cancelled = False
 
 
 class ControlAPI:
@@ -104,6 +111,11 @@ class ControlAPI:
         self.token = token or secrets.token_urlsafe(24)
         self.timeout = timeout
         self.enabled = enabled
+        # Declared here rather than only on failure. The launcher reads this
+        # directly when start() fails, and describe() reaches for it, so
+        # having it exist only on the error path made both a latent
+        # AttributeError waiting on any code that read it eagerly.
+        self.last_error = None
 
         self._queue = queue.Queue(maxsize=MAX_PENDING)
         # Replaced wholesale by the main loop each frame. A single attribute
@@ -130,6 +142,11 @@ class ControlAPI:
                 req = self._queue.get_nowait()
             except queue.Empty:
                 break
+            if req.cancelled:
+                # The HTTP thread already answered 504 and moved on. Do not run
+                # a command nobody is waiting for.
+                req.event.set()
+                continue
             fn = handler_map.get(req.name)
             if fn is None:
                 req.error = f"unknown command: {req.name}"
@@ -196,7 +213,37 @@ class ControlAPI:
                     pass  # the agent hung up; nothing to do
 
             def _deny(self, code, why):
+                # Drain the body before replying, or close the connection.
+                # We answer on a keep-alive connection (HTTP/1.1), so unread
+                # body bytes stay in the socket and get parsed as the start of
+                # the NEXT request. A 401 on /seek therefore made the next
+                # legitimate /next on the same socket return a 400 HTML error
+                # page. Same defect on the oversized-body path, which raised
+                # before reading anything.
+                self._drain()
                 self._send(code, {"ok": False, "error": why})
+
+            def _drain(self):
+                """Consume and discard a request body we have not read yet.
+
+                Must be conditional. An earlier version drained unconditionally
+                and deadlocked: for a 404 the body had ALREADY been read by
+                _body(), so this blocked forever waiting for bytes the client
+                had already sent and was now waiting on us for. The server
+                stopped answering and the test hung on its read.
+                """
+                if getattr(self, "_body_read", False):
+                    return
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    n = 0
+                remaining = min(max(n, 0), MAX_BODY + 1)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        return
+                    remaining -= len(chunk)
 
             def _body(self):
                 """Parse the request body as JSON, or as a form.
@@ -205,13 +252,14 @@ class ControlAPI:
                 would mean the most likely caller has to build a JSON body it
                 has no way to configure.
                 """
+                self._body_read = True
                 try:
                     n = int(self.headers.get("Content-Length") or 0)
                 except ValueError:
                     return {}
                 if n <= 0:
                     return {}
-                if n > 64 * 1024:
+                if n > MAX_BODY:
                     raise ValueError("body too large")
                 raw = self.rfile.read(n)
                 ctype = (self.headers.get("Content-Type") or "").lower()
@@ -249,6 +297,7 @@ class ControlAPI:
                     return 429, {"ok": False,
                                   "error": "too many pending commands"}
                 if not req.event.wait(api.timeout):
+                    req.cancelled = True
                     return 504, {"ok": False,
                                  "error": f"the app did not answer within "
                                           f"{api.timeout}s (is it running and "
@@ -300,6 +349,7 @@ class ControlAPI:
                     pass
 
             def do_POST(self):
+                self._body_read = False
                 path = self.path.split("?", 1)[0].rstrip("/")
                 # /webhook is allowed to authenticate from ?token=, so its auth
                 # check is deferred to _do_webhook. Checking it here first
@@ -517,7 +567,7 @@ class ControlAPI:
         if not self.enabled:
             return "control API disabled (api_enabled = false)"
         if self._server is None:
-            return getattr(self, "last_error", "API not running")
+            return self.last_error or "API not running"
         return f"http://{self.host}:{self.port}  (token: {self.token})"
 
 

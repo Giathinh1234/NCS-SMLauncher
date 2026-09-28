@@ -1,0 +1,28 @@
+# HashPlay runtime dependencies.
+#
+# CI referenced this file (build.yml, dependencies.yml, scripts/build_venv.sh)
+# but it did not exist in the repository, so every CI job failed at the
+# install step and scripts/build_venv.sh failed immediately. Derived from the
+# third-party imports actually present in src/, and pinned to the versions
+# this project is known to run on.
+#
+# ffmpeg and ffprobe are NOT pip packages. They are required for video
+# backgrounds and are listed in the README, not here.
+
+pygame>=2.6,<3
+numpy>=2.0
+sounddevice>=0.5
+miniaudio>=1.66
+libtorrent>=2.0
+pillow>=10.0
+mutagen>=1.47
+
+# Media-key support (macOS). media_keys.py degrades gracefully without these,
+# but the feature is dead without them -- so they are listed rather than left
+# to chance. Foundation is imported for NSSystemDefined media-key events.
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+
+# Optional: resolving web video links. ncs_video.py reports a clear message
+# and disables web links when it is missing, so it is not required.
+# yt-dlp>=2024.1.0

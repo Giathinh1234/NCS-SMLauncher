@@ -148,13 +148,38 @@ def _asset_matches_platform(name, platform):
     macOS ships a zipped .app bundle or a bare ``HashPlay``; Linux ships a
     single executable. Anything else is unsupported, so the answer is False
     rather than a hopeful guess.
+
+    The macOS rule used to be only ``.app.zip`` or exactly ``HashPlay`` --
+    but the names actually published on the v1.0.1 release are
+    ``HashPlay-macos-arm64``, ``HashPlay-android-arm64.apk`` and
+    ``SHA256SUMS.txt``, and the first matches neither. So the in-app
+    self-updater, a shipped headline feature, could not see any release the
+    project had ever produced. It now accepts the macOS naming we actually
+    use, while still refusing the APK and the checksum file, which is what
+    would happen if this were loosened to a hopeful substring match.
     """
     if not name:
         return False
+    low = name.lower()
     if platform == "darwin":
-        return name.endswith(".app.zip") or name == "HashPlay"
+        # The APK is a desktop-incompatible artifact even though its name
+        # contains "HashPlay". This guard is deliberately inside the branch:
+        # an earlier version hoisted it above the platform dispatch, which
+        # would have quietly changed the meaning for any future platform.
+        if "android" in low or low.endswith(".apk"):
+            return False
+        if low.endswith(".app.zip") or name == "HashPlay":
+            return True
+        if low.startswith("hashplay") and any(
+                tag in low for tag in ("macos", "darwin", "apple", "osx")):
+            return True
+        return False
     if platform == "linux":
-        return "linux" in name.lower()
+        if "android" in low or low.endswith(".apk"):
+            return False
+        return "linux" in low
+    # Android is not a self-update target: the app ships as an APK through
+    # the Play Store, which owns its own update path.
     return False
 
 
@@ -247,7 +272,13 @@ def fetch_latest(current=None, include_prerelease=True, timeout=TIMEOUT):
             continue
         if info.prerelease and not include_prerelease:
             continue
-        return pick_asset(info)
+        asset = pick_asset(info)
+        if asset is not None:
+            return asset
+        # This release is newer than us but has nothing installable on this
+        # platform -- a notes-only release, say. Returning None here aborted
+        # the whole scan, so an older release that DID carry a usable asset
+        # was never tried. Keep looking.
     return None
 
 
@@ -493,9 +524,11 @@ def _swap_script(staged, target, pid):
         '  cp "$STAGED" "$TARGET"',
         "fi",
         "",
-        "# Relaunch. nohup so this helper can exit immediately.",
-        'cd "$(dirname "$TARGET")"',
-        'nohup "$TARGET" >/dev/null 2>&1 &',
+        "# Relaunch. `open`, not nohup/exec: on macOS TARGET is HashPlay.app,",
+        "# which is a DIRECTORY, and exec'ing a directory fails with rc=126",
+        "# Permission denied. The user quits, the swap happens, and the app",
+        "# never comes back. `open` is what the Finder would have done.",
+        'open "$TARGET" >/dev/null 2>&1 &',
         "exit 0",
     ])
 

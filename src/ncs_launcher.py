@@ -451,6 +451,14 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
             pygame.draw.line(surf, ray_col, (int(sx), int(sy)), (int(ex), int(ey)), rw)
             if rw > 1:
                 pygame.draw.line(surf, (*ray_col, 60), (int(sx), int(sy)), (int(ex), int(ey)), rw + 2)
+        # "disc" and "album" paint into `surf` and then fell off the end of
+        # their branch, so the only screen.blit(surf, ...) in this function
+        # sat in the final else and never ran for either of them. Two of the
+        # six modes were a dead window that still burned a PIL decode, a
+        # LANCZOS resize and a rotate every frame for a surface nobody saw.
+        # Measured: 0 non-black pixels for disc and album, against ~140k for
+        # bars.
+        screen.blit(surf, (0, 0))
 
     elif mode == "album":
         # --- Normal boring square album cover mode ---
@@ -501,6 +509,7 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
             bh = max(3, int(m * 30))
             b_col = neon_color(i / num_m_bars + t * 0.08)
             pygame.draw.rect(surf, b_col, (start_bx + i * (bar_w + 2), by, bar_w, bh), border_radius=2)
+        screen.blit(surf, (0, 0))
 
     else:
         avail_w = min(w * 0.68, 1200)
@@ -940,6 +949,34 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
 
     tip = font.render("Enter start · Esc or x close", True, (130, 135, 150))
     screen.blit(tip, (ox + 20, oy + oh - 30))
+
+
+def draw_notice(screen, font, w, h, notice):
+    """A standalone banner for a transient message.
+
+    Notices were only ever painted from inside draw_torrent_overlay, which is
+    gated on libtorrent being installed. That made all 26 push_notice() sites
+    invisible in a perfectly normal configuration: the resize notice, "library:
+    <path>", "ffmpeg is required", "unbound action", the API bind failure,
+    a track that will not decode, the setup results. With libtorrent present
+    they were still wrong, because an unrelated notice popped the whole
+    torrent download panel onto the screen to carry one line of text.
+    """
+    if not notice:
+        return
+    kind, text = notice
+    colour = {"info": (150, 210, 255), "warn": (255, 200, 90),
+              "error": (255, 110, 110)}.get(kind, (200, 200, 200))
+    label = font.render(text[:78], True, colour)
+    pad = 10
+    box = pygame.Surface((min(label.get_width() + pad * 2, w - 40),
+                          label.get_height() + pad), pygame.SRCALPHA)
+    box.fill((18, 18, 24, 225))
+    pygame.draw.rect(box, colour, box.get_rect(), 1)
+    x = (w - box.get_width()) // 2
+    y = 58
+    screen.blit(box, (x, y))
+    screen.blit(label, (x + pad, y + pad // 2))
 
 
 def main():
@@ -1689,7 +1726,16 @@ def main():
                     if overlay_open:
                         overlay_open = False
                         overlay_text = ""
-                    elif torrents and not torrents_dismissed:
+                    elif torrents and not torrents_dismissed and (notice
+                                                                  or overlay_open):
+                        # Only consume ESC if the panel is actually on screen.
+                        # torrents_dismissed starts False, so this branch used
+                        # to match on the very first ESC at rest -- swallowing
+                        # it to dismiss a panel that was never drawn. The
+                        # result was three presses to quit where the banner,
+                        # the comment and the docstring all promise two.
+                        # The draw gate is `notice or overlay_open`, so that
+                        # is the condition to mirror here.
                         torrents_dismissed = True
                     elif time.time() < quit_armed_until:
                         running = False
@@ -1952,6 +1998,13 @@ def main():
             if notice or overlay_open:
                 draw_torrent_overlay(screen, font, w, h, overlay_text, statuses,
                                      notice)
+
+        # Notices are drawn independently of the torrent panel. They used to
+        # be painted only from inside draw_torrent_overlay, so with libtorrent
+        # absent -- a supported configuration, `lt is None` is handled
+        # everywhere else -- nothing was ever reported, and with it present an
+        # unrelated one-line message dragged the whole download panel up.
+        draw_notice(screen, font, w, h, notice)
 
         # Draw the control-API panel on top when it is open
         if api_open:
