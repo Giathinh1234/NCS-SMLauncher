@@ -154,8 +154,30 @@ class ControlAPI:
             def log_message(self, *_a):       # keep the app's stdout clean
                 pass
 
-            def _authed(self):
+            def _authed(self, allow_query_token=False):
+                """Check the bearer token.
+
+                `allow_query_token` exists only for /webhook, because most
+                webhook senders (Discord, Slack test boxes, IFTTT, a curl on
+                a phone) can add a URL but cannot add an Authorization header.
+                It is a real trade-off: a token in a URL is far more likely to
+                end up in a proxy log, a shell history, or a screenshot than a
+                header is. Since this binds loopback-only and the token lives
+                in a 0600 file, that risk is bounded -- but the header form is
+                still the better one, and is what the other routes require.
+                """
                 got = self.headers.get("Authorization", "")
+                if not got:
+                    got = self.headers.get("X-HashPlay-Token", "")
+                    if got:
+                        got = f"Bearer {got}"
+                if not got and allow_query_token:
+                    from urllib.parse import parse_qs, urlparse
+                    q = (parse_qs(urlparse(self.path).query,
+                                  keep_blank_values=True)
+                         .get("token", [""])[0])
+                    if q:
+                        got = f"Bearer {q}"
                 want = f"Bearer {api.token}"
                 # compare_digest, not ==: a plain comparison leaks the token
                 # length through timing.
@@ -177,6 +199,12 @@ class ControlAPI:
                 self._send(code, {"ok": False, "error": why})
 
             def _body(self):
+                """Parse the request body as JSON, or as a form.
+
+                Webhook senders default to form encoding, and rejecting that
+                would mean the most likely caller has to build a JSON body it
+                has no way to configure.
+                """
                 try:
                     n = int(self.headers.get("Content-Length") or 0)
                 except ValueError:
@@ -185,10 +213,23 @@ class ControlAPI:
                     return {}
                 if n > 64 * 1024:
                     raise ValueError("body too large")
+                raw = self.rfile.read(n)
+                ctype = (self.headers.get("Content-Type") or "").lower()
+                text = raw.decode("utf-8", "replace")
+                if "application/x-www-form-urlencoded" in ctype:
+                    from urllib.parse import parse_qs
+                    # keep_blank_values: `next=` with an empty value is how a
+                    # sender says "next, no arguments". parse_qs drops blank
+                    # values by default, so the key vanished and the bare-
+                    # keyword shorthands silently did nothing.
+                    # Flattened to one string per key: a form body is
+                    # inherently scalar, and a list would confuse the
+                    # command handlers.
+                    return {k: v[0] for k, v
+                            in parse_qs(text, keep_blank_values=True).items()}
                 try:
-                    raw = self.rfile.read(n)
-                    return json.loads(raw.decode("utf-8")) or {}
-                except (ValueError, UnicodeDecodeError) as exc:
+                    return json.loads(text) or {}
+                except ValueError as exc:
                     raise ValueError(f"invalid JSON body: {exc}")
 
             def _call(self, name, args):
@@ -241,21 +282,182 @@ class ControlAPI:
                     return self._reply("__search", {"q": q})
                 self._deny(404, f"no such endpoint: {path}")
 
+            def _text(self, code, line):
+                """A one-line plain-text reply.
+
+                Webhook senders show the raw response body in their test
+                panel, and a human is usually the one reading it there. JSON
+                at that moment is noise; "playing: X" is not.
+                """
+                body = (line + "\n").encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
             def do_POST(self):
-                if not self._authed():
-                    return self._deny(401, "bad or missing bearer token")
                 path = self.path.split("?", 1)[0].rstrip("/")
+                # /webhook is allowed to authenticate from ?token=, so its auth
+                # check is deferred to _do_webhook. Checking it here first
+                # made the query-token path unreachable: the request was
+                # rejected 401 before the lenient check could run.
+                if path != "/webhook" and not self._authed():
+                    return self._deny(401, "bad or missing bearer token")
                 try:
                     args = self._body()
                 except ValueError as exc:
                     return self._deny(400, str(exc))
                 if not isinstance(args, dict):
                     return self._deny(400, "body must be a JSON object")
+                if path == "/webhook":
+                    return self._do_webhook(args)
                 if path in ("/play", "/pause", "/resume", "/next", "/prev",
                             "/seek", "/volume", "/muted", "/visualizer",
                             "/video"):
                     return self._reply(path.lstrip("/"), args)
                 self._deny(404, f"no such endpoint: {path}")
+
+            def _do_webhook(self, args):
+                """One flat endpoint for things that cannot speak JSON.
+
+                Deliberately a THIN translation layer: it normalises a few
+                shapes and then calls the same command handlers the JSON API
+                uses. It grants no capability of its own, so it cannot drift
+                into a second, less-audited way to reach the player.
+                """
+                if not self._authed(allow_query_token=True):
+                    return self._text(401, "bad or missing token")
+
+                # Normalise the shapes a sender is likely to produce:
+                #   {"action":"play","query":"x"}   explicit
+                #   {"track":"x"} / {"q":"x"}       "play this"
+                #   {"volume":0.3}                  bare key, implied action
+                #   {"cmd":"next"}                  cmd as an alias
+                # One list, used twice. It was two lists once and they drifted:
+                # `song=` and `name=` were accepted as track aliases below but
+                # were not in the implied-action list, so they silently did
+                # nothing.
+                TRACK_KEYS = ("track", "q", "query", "title", "song", "name")
+
+                action = (args.get("action") or args.get("cmd") or "").strip()
+                lowered = {str(k).lower(): v for k, v in args.items()}
+
+                if not action:
+                    for key in TRACK_KEYS:
+                        if lowered.get(key):
+                            action = "play"
+                            break
+                if not action:
+                    for key, implied in (("volume", "volume"),
+                                         ("seek", "seek"),
+                                         ("next", "next"),
+                                         ("prev", "prev"),
+                                         ("pause", "pause"),
+                                         ("resume", "resume")):
+                        if key in lowered:
+                            action = implied
+                            break
+                if not action:
+                    if self.path.split("?", 1)[0].rstrip("/") == "/webhook":
+                        return self._text(
+                            200, "HashPlay is up. POST an action, e.g. "
+                                 '{"action":"play","query":"daft punk"}')
+                    return self._text(400, "no action given")
+
+                action = action.lower().strip()
+                # "mute" is what people type; the command is "muted".
+                if action == "mute":
+                    action = "muted"
+                # Drop the control keys so a handler never sees them.
+                payload = {k: v for k, v in args.items()
+                           if k.lower() not in ("action", "cmd", "token")}
+                # Normalise the track-ish keys onto "query". Without this,
+                # `track=daft punk` set action=play but handed api_cmd_play a
+                # dict with no "query" key at all, so it fell through to its
+                # bare-play branch and merely RESUMED whatever was already
+                # loaded -- a silent no-op that looks like it worked.
+                if action == "play" and "index" not in payload:
+                    for key in TRACK_KEYS:
+                        if payload.get(key):
+                            payload["query"] = payload[key]
+                            break
+                # Same class of bug for the scalar shorthands: `volume=0.3`
+                # names the action AND the value, but api_cmd_volume reads
+                # "value" and api_cmd_seek reads "seconds". Left untranslated
+                # both replied with a ValueError.
+                for action_name, param in (("volume", "value"),
+                                           ("seek", "seconds")):
+                    if (action == action_name and param not in payload
+                            and action_name in payload):
+                        payload[param] = payload[action_name]
+                # Everything arrives as a string over a form; the numeric
+                # handlers want real numbers. `muted` is the exception: its
+                # "value" is a boolean, and coercing "true" with float()
+                # raised and rejected the request outright.
+                for key in ("index", "seconds", "delta", "value"):
+                    if key not in payload or not isinstance(payload[key], str):
+                        continue
+                    if key == "value" and action in ("muted", "play"):
+                        payload[key] = payload[key].strip().lower() in (
+                            "1", "true", "yes", "on")
+                        continue
+                    try:
+                        payload[key] = float(payload[key])
+                        if key == "index":
+                            payload[key] = int(payload[key])
+                    except ValueError:
+                        return self._text(400, f"{key} must be a number")
+
+                # Read-only asks. These are answered from the snapshot the
+                # main loop publishes, or by the same helpers /tracks uses,
+                # so they cannot block behind the command queue.
+                if action == "status":
+                    snap = api.snapshot or {}
+                    cur = snap.get("track") or "nothing"
+                    return self._text(
+                        200, f"{'playing' if snap.get('playing') else 'paused'}"
+                             f": {cur}  [{snap.get('artist') or 'unknown'}]"
+                             f"  vol={snap.get('volume')}")
+                if action == "tracks":
+                    status, out = self._call("__tracks", {})
+                    if status != 200:
+                        return self._text(status, str((out or {}).get(
+                            "error", "failed")))
+                    return self._text(200, f"tracks: {len(out.get('result') or [])}"
+                                          f" in the library")
+                if action == "search":
+                    q = payload.get("q") or payload.get("query") or ""
+                    status, out = self._call("__search", {"q": q})
+                    if status != 200:
+                        return self._text(status, str((out or {}).get(
+                            "error", "failed")))
+                    res = (out or {}).get("result") or {}
+                    return self._text(200, f"search {q!r}: "
+                                          f"{res.get('count', 0)} match(es)")
+
+                if action not in ("play", "pause", "resume", "next", "prev",
+                                 "seek", "volume", "muted", "visualizer",
+                                 "video"):
+                    return self._text(400, f"unknown action {action!r}")
+
+                status, payload_out = self._call(action, payload)
+                if status != 200:
+                    return self._text(status, str((payload_out or {}).get(
+                        "error", "failed")))
+                result = (payload_out or {}).get("result")
+                if isinstance(result, dict):
+                    for key in ("track", "status", "volume", "mode", "muted",
+                                "video", "index", "count"):
+                        if key in result:
+                            return self._text(200, f"{action}: {key}="
+                                                    f" {result[key]}")
+                if isinstance(result, list):
+                    return self._text(200, f"{action}: {len(result)} item(s)")
+                return self._text(200, f"{action}: ok")
 
         try:
             self._server = ThreadingHTTPServer((self.host, self.port), Handler)
@@ -284,6 +486,11 @@ class ControlAPI:
                     "GET /status": "current player state",
                     "GET /tracks": "the library",
                     "GET /tracks/search?q=": "search title/artist",
+                    "POST /webhook": 'one-shot form or JSON: '
+                                     '{"action":"play","query":"daft punk"} '
+                                     "— also accepts ?token= for senders "
+                                     "that cannot set headers; replies in "
+                                     "plain text",
                     "POST /play": '{"index": n} | {"query": "text"} | {}',
                     "POST /pause": "{}",
                     "POST /resume": "{}",

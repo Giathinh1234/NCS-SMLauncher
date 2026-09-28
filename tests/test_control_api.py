@@ -126,14 +126,33 @@ st, body = call("/play", {}, method="POST")
 check("POST with no token -> 401, and auth is checked before the body",
       st == 401, st)
 
-req = urllib.request.Request(f"http://127.0.0.1:{PORT}/play", data=b"{not json",
-                             method="POST")
+# Must set the content type explicitly. urllib silently adds
+# `application/x-www-form-urlencoded` when a body is present but no type is,
+# so without this the "malformed JSON" below was really being parsed as a
+# perfectly valid form field and the endpoint rightly accepted it.
+req = urllib.request.Request(f"http://127.0.0.1:{PORT}/play",
+                             data=b"{not json", method="POST")
 req.add_header("Authorization", "Bearer test-token-0123456789abcdef")
+req.add_header("Content-Type", "application/json")
 try:
     urllib.request.urlopen(req, timeout=6)
     check("malformed JSON -> 400", False, "it was accepted")
 except urllib.error.HTTPError as e:
     check("malformed JSON -> 400", e.code == 400, e.code)
+
+# And a body sent as a form -- which is what urllib defaults to -- should be
+# understood as a form, not rejected.
+req = urllib.request.Request(f"http://127.0.0.1:{PORT}/play",
+                             data=b"query=hello", method="POST")
+req.add_header("Authorization", "Bearer test-token-0123456789abcdef")
+try:
+    with urllib.request.urlopen(req, timeout=6) as r:
+        body = json.loads(r.read().decode())
+    check("a form-encoded body is understood as a form",
+          body.get("ok") is True
+          and body.get("result", {}).get("played") == {"query": "hello"}, body)
+except urllib.error.HTTPError as e:
+    check("a form-encoded body is understood as a form", False, e.code)
 
 print("7) an unknown command is an error, not a silent success")
 api2_stop = stop.is_set

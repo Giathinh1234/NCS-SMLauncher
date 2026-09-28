@@ -136,6 +136,20 @@ def main():
            b.get("result") or b.get("error"))
         return
 
+    if cmd == "hook":
+        # Print the paste-ready webhook URL, so it can be dropped straight
+        # into a Discord/IFTTT/n8n "send a webhook" box.
+        print(f"  url    {BASE}/webhook?token={token()}")
+        print( "  play   curl -X POST -d 'track=daft punk' "
+               f"'{BASE}/webhook?token={token()}'")
+        print( "  other  curl -X POST -d 'action=next' "
+               f"'{BASE}/webhook?token={token()}'")
+        print( "  shorthands: track= query= next= prev= pause= resume= "
+               "volume=0.4 seek=30")
+        print( "  read   curl -X POST -d 'action=status' "
+               f"'{BASE}/webhook?token={token()}'")
+        return
+
     if cmd == "video":
         s, b = call("/video", {"off": True} if (rest and rest[0] == "off")
                     else {"source": rest[0] if rest else ""})

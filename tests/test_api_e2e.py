@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = "/Users/giathinh/ncs-music-launcher"
@@ -233,6 +234,41 @@ try:
           str(body.get("error", "")).lower(), (s, body))
     s, body = get("/status", token)
     check("still alive after all the bad input", s == 200)
+
+    print("7b) the webhook works against the live app too")
+    hook = f"http://127.0.0.1:{PORT}/webhook?token={token}"
+    form = urllib.parse.urlencode({"track": "drift"}).encode()
+    req = urllib.request.Request(hook, data=form, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            hook_body = r.read().decode().strip()
+            hook_ct = r.headers.get("Content-Type", "")
+        check("webhook accepts a form body with the token in the URL",
+              r.status == 200, (r.status, hook_body))
+        check("it replies in plain text", hook_ct.startswith("text/plain"),
+              hook_ct)
+        check("it names the track it played", "Drift" in hook_body, hook_body)
+    except urllib.error.HTTPError as e:
+        check("webhook accepts a form body with the token in the URL", False,
+              (e.code, e.read().decode()[:200]))
+
+    time.sleep(0.5)
+    s, body = get("/status", token)
+    check("the app really changed track from the webhook",
+          "drift" in (body.get("result") or {}).get("track", "").lower(),
+          (body.get("result") or {}).get("track"))
+
+    # and the no-header path a dumb sender would use
+    req = urllib.request.Request(hook, data=b"next=", method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            check("a blank-valued bare keyword works (next=)", r.status == 200,
+                  r.status)
+    except urllib.error.HTTPError as e:
+        check("a blank-valued bare keyword works (next=)", False,
+              (e.code, e.read().decode()[:200]))
 
     print("8) auth is enforced on the live app too")
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/status")
