@@ -1290,14 +1290,23 @@ def main():
     # the keymap, the settings panel and the media keys all agree on what an
     # action does, and adding a binding never means editing the event chain.
 
-    def do_pick_folder():
+    def do_pick_folder(current=None):
         """Choose a library folder, rescan, and remember the choice.
 
         Shared by the O key and the settings panel's folder row, so both do
         exactly the same thing.
+
+        `current` is accepted (and ignored in favour of the live `folder`) only
+        because SettingsPanel calls its injected `pick_folder(current)` -- it
+        wants the dialog to open on the folder shown in the panel. It used to
+        take no arguments at all, so choosing a folder from the settings panel
+        raised TypeError: do_pick_folder() takes 0 positional arguments but 1
+        was given. That was a hard crash on a documented menu item, and because
+        the settings file is written on the way in, it also left the next
+        launch reading a half-written config.
         """
         nonlocal folder, selected
-        picked = pick_folder_dialog(folder)
+        picked = pick_folder_dialog(current or folder)
         if not (picked and os.path.isdir(picked)):
             push_notice(("info", "folder picker cancelled"))
             return False
@@ -1423,7 +1432,11 @@ def main():
                 push_notice(("info", "paused"))
             else:
                 push_notice(("info", "playing"))
-        elif action == "prev":
+        # The media keys emit "previous" (Apple's name for the key, and the
+        # name the keymap action uses), but this branch only ever tested
+        # "prev" -- so the rewind key did nothing at all, every time, with no
+        # error anywhere. Accept both spellings.
+        elif action in ("prev", "previous"):
             if player.paused and tracks:
                 selected = (selected - 1) % len(tracks)
                 nonlocal_selected[0] = selected

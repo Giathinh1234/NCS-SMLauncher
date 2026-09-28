@@ -45,6 +45,31 @@ DEFAULT_KEYMAP = {
     "quit": "Q",
 }
 
+def _env_port(name="HASHPLAY_API_PORT", fallback=8777):
+    """Read a port from the environment, ignoring anything unusable.
+
+    This used to be a bare int() inside the dict literal below, evaluated at
+    import time, so HASHPLAY_API_PORT=not-a-port raised ValueError and took
+    the whole module -- and therefore the whole app -- down on startup. Every
+    other failure mode in this file is carefully defended ("a corrupt settings
+    file must never be able to stop the player from starting"); this one path
+    was the odd one out. A typo in a test script or a stale export should cost
+    you the custom port, not the application.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return fallback
+    try:
+        port = int(raw)
+    except ValueError:
+        print(f"{name}={raw!r} is not a port; using {fallback}")
+        return fallback
+    if not 0 <= port <= 65535:
+        print(f"{name}={raw!r} is out of range; using {fallback}")
+        return fallback
+    return port
+
+
 # schema_version 0 = pre-migration format; see migrations.py.
 DEFAULT_CONFIG = {
     "library_folder": "",
@@ -58,7 +83,7 @@ DEFAULT_CONFIG = {
     # to anyone on the network. The port is free to move if 8777 is taken.
     "api_enabled": True,
     "api_host": "127.0.0.1",
-    "api_port": int(os.environ.get("HASHPLAY_API_PORT") or 8777),
+    "api_port": _env_port(),
     "setup_complete": False,
 }
 

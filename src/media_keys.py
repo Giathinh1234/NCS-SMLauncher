@@ -61,10 +61,12 @@ class MediaKeyTap:
             # macOS re-enables us after timeout; restart tap
             Quartz.CGEventTapEnable(self.tap, True)
             return None
-        if event_type != Quartz.kCGEventOtherKeyDown and \
-           event_type != Quartz.kCGEventKeyDown and \
-           event_type != Quartz.kCGEventTapDownOnMediaKey and \
-           event_type != 14:   # NSSystemDefined / keyDown equivalent
+        # See start(): this constant is absent from this pyobjc build. Reading
+        # it by name inside the callback raised AttributeError on every single
+        # event, which the tap would have swallowed.
+        if event_type not in (14, getattr(Quartz, "kCGEventOtherKeyDown", 14),
+                              Quartz.kCGEventKeyDown,
+                              Quartz.kCGEventTapDownOnMediaKey):
             return event
 
         keycode = Quartz.CGEventGetIntegerValueField(event,
@@ -90,8 +92,16 @@ class MediaKeyTap:
         if not HAVE_QUARTZ or self.running:
             return False
         try:
+            # kCGEventOtherKeyDown does not exist in this pyobjc build
+            # (verified: hasattr(Quartz, 'kCGEventOtherKeyDown') is False), so
+            # naming it raised AttributeError on EVERY call to start(). The
+            # broad `except` below turned that into a silent False, which is
+            # why media keys looked like they had never worked rather than
+            # crashing. The callback already special-cases event type 14
+            # (NSSystemDefined) by hand, so the mask does not need it.
+            other_key_down = getattr(Quartz, "kCGEventOtherKeyDown", 14)
             mask = (Quartz.CGEventMaskBit(14) |          # NSSystemDefined
-                    Quartz.CGEventMaskBit(Quartz.kCGEventOtherKeyDown))
+                    Quartz.CGEventMaskBit(other_key_down))
             self.tap = Quartz.CGEventTapCreate(
                 Quartz.kCGSessionEventTap,
                 Quartz.kCGHeadInsertEventTap,
@@ -114,7 +124,12 @@ class MediaKeyTap:
             t = threading.Thread(target=run, daemon=True)
             t.start()
             return True
-        except Exception:
+        except Exception as exc:
+            # This used to be a bare `return False`, which is how a missing
+            # Quartz constant and a genuine missing-permission failure looked
+            # identical. Media keys would simply never work and the only clue
+            # was that nothing happened when you pressed them.
+            print(f"media keys unavailable: {exc}")
             return False
 
 

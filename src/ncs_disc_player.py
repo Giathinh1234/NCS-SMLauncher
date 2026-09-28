@@ -11,6 +11,7 @@ import math
 import time
 import glob
 import threading
+import colorsys
 
 try:
     import sounddevice as sd
@@ -397,7 +398,11 @@ def main():
     # Use command line argument or default music folder
     music_folder = sys.argv[1] if len(sys.argv) > 1 else MUSIC_FOLDER
     if not os.path.isdir(music_folder):
-        os.makedirs(music_folder, 1)
+        # Was os.makedirs(music_folder, 1) -- that second argument is the
+        # *mode*, and 1 is 0o001: owner-execute, no read, no write, no group or
+        # other bits at all. The folder it created could not be listed, entered
+        # or filled by anyone but root. exist_ok is what was actually meant.
+        os.makedirs(music_folder, exist_ok=True)
         print(f"Created music folder: {music_folder}")
         print("Please add some music files and restart.")
         return

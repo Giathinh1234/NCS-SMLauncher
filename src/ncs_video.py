@@ -121,10 +121,23 @@ def resolve_source(path_or_url, allow_web=True, timeout=30):
 
 
 def _resolve_web(url, timeout=30):
-    """Ask yt-dlp for a direct progressive MP4 so ffmpeg can read it."""
+    """Ask yt-dlp for a direct progressive MP4 URL so ffmpeg can read it.
+
+    This used to pass `-o -`, which tells yt-dlp to write the *media bytes* to
+    stdout -- and then decode them with text=True and return them as though
+    they were a URL. So every single successful resolve of a web link died on
+    `UnicodeDecodeError: 'utf-8' codec can't decode byte 0x93` partway through
+    the MP4. The web-link feature was completely non-functional; the old test
+    only ever checked that a *failing* resolve reported an error, which it did,
+    for the wrong reason.
+
+    `-g` (--get-url) is the flag for "just tell me the URL". stdout is then
+    genuinely text, so text=True is correct, and we hand ffmpeg a URL it can
+    stream instead of a buffer of someone's video.
+    """
     cmd = [YTDLP, "--no-playlist", "--no-warnings", "--quiet",
            "-f", "best[ext=mp4][vcodec!*=av01]/best[ext=mp4]/best",
-           "-o", "-", url]
+           "-g", url]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout)
@@ -132,11 +145,14 @@ def _resolve_web(url, timeout=30):
         raise VideoError("yt-dlp timed out")
     except OSError as e:
         raise VideoError(f"yt-dlp could not run: {e}")
-    if proc.returncode != 0 or not proc.stdout.strip():
+    # -g prints one URL per selected format, newest first.
+    lines = [ln.strip() for ln in (proc.stdout or "").splitlines()
+             if ln.strip()]
+    if proc.returncode != 0 or not lines:
         detail = (proc.stderr or "").strip().splitlines()
         tail = detail[-1][:160] if detail else "no stream found"
         raise VideoError(f"yt-dlp: {tail}")
-    return proc.stdout.strip(), f"resolved from {url}"
+    return lines[0], f"resolved from {url}"
 
 
 def probe(source, timeout=15):
@@ -566,7 +582,18 @@ class VideoSlot:
     # ---- per-frame -----------------------------------------------------
     def _fail(self, text):
         self.message = text
-        self.visual = None
+        # Drop the reference AND close the process. Just setting self.visual
+        # to None leaked a live ffmpeg: the Python object went out of scope
+        # with no __del__, so the pipe stayed open and ffmpeg kept running
+        # with nobody reading it. On a .strm or any slow source _fail() fires
+        # from the draw path, so a user cycling through video links could pile
+        # up one ffmpeg per attempt and never get rid of them.
+        old, self.visual = self.visual, None
+        if old is not None:
+            try:
+                old.close()
+            except Exception as exc:
+                print(f"video close after failure failed: {exc}")
         self.enabled = False
         self._want = None
         # An automatic failure is NOT the user turning video off, so the slot
