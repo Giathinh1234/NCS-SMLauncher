@@ -118,16 +118,32 @@ for mode in ("disc", "album", "bars", "mirror"):
     check(f"{mode:8} idle is not pricier than playing ({i:.2f} vs {p:.2f})",
           i <= p * 1.15 + 0.2, f"idle {i:.2f} vs playing {p:.2f}")
 
-L.drop_render_caches()
 print("\nTHE OTHER POINT: album art must not be re-decoded every frame")
-# If the cache stops working, disc jumps by roughly 7 ms (decode + LANCZOS +
-# BICUBIC on a real image, measured at 49% of the original frame cost).
+# Measured the wrong way round at first: cost_ms() runs 12 warmup frames
+# before timing, so a "cold" measurement had already filled the cache and the
+# check came out backwards. This measures the genuinely first frame -- cache
+# cleared, no warmup -- against steady state.
+screen = pygame.Surface((W, H))
 L.drop_render_caches()
-cold = cost_ms("disc", playing, meta, frames=40, repeats=2)
-warm = cost_ms("disc", playing, meta, frames=40, repeats=2)
-check(f"a warm disc frame is not paying for a fresh decode "
-      f"({cold:.2f} -> {warm:.2f} ms)", warm < cold * 0.9 + 0.5,
-      f"cold {cold:.2f} warm {warm:.2f}")
+gc.collect()
+t0 = time.process_time()
+L.draw_visualizer(screen, playing, W, H, "disc", 1.0, meta, None)
+first = (time.process_time() - t0) * 1000
+
+gc.collect()
+t0 = time.process_time()
+for i in range(40):
+    L.draw_visualizer(screen, playing, W, H, "disc", 1.0 + i * 0.016, meta, None)
+steady = (time.process_time() - t0) / 40 * 1000
+
+# The first frame pays a PNG decode plus a LANCZOS resize; every frame after
+# it should be far cheaper. If the cache silently stopped working, the two
+# would converge.
+print(f"   first frame {first:.2f} ms, steady state {steady:.2f} ms")
+check(f"the first frame is dearer than steady state ({first:.2f} > {steady:.2f})",
+      first > steady * 1.3, f"first {first:.2f} steady {steady:.2f}")
+check("steady state is not paying for a decode", steady < first * 0.8,
+      f"first {first:.2f} steady {steady:.2f}")
 
 print()
 if fails:
