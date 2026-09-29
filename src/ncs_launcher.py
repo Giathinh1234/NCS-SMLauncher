@@ -1113,6 +1113,28 @@ def draw_torrent_overlay(screen, font, w, h, text, statuses, notice):
     screen.blit(tip, (ox + 20, oy + oh - 30))
 
 
+def _torrent_panel_up(overlay_open, statuses):
+    """True when the torrent download panel is genuinely on screen.
+
+    The ESC handler needs this to decide whether an ESC belongs to the panel
+    or to the quit ladder. It must NOT be derived from `notice`.
+
+    `notice` is shared state that push_notice() writes for every one-line
+    message in the app -- including the "press Esc again to quit" warning the
+    quit ladder itself raises. Reading it as "the panel is open" meant the
+    first ESC armed the quit and set `notice`, and the second ESC then
+    satisfied the panel branch instead of quitting. With libtorrent present
+    that made ESC unable to quit the app at all.
+
+    What actually puts the panel on screen (see the draw gate near the end of
+    main) is the infohash prompt being up, or there being torrent status lines
+    worth drawing. A bare notice is a banner from draw_notice(), not a panel.
+    """
+    if overlay_open:
+        return True
+    return bool(statuses)
+
+
 def draw_notice(screen, font, w, h, notice):
     """A standalone banner for a transient message.
 
@@ -1924,16 +1946,30 @@ def main():
                     if overlay_open:
                         overlay_open = False
                         overlay_text = ""
-                    elif torrents and not torrents_dismissed and (notice
-                                                                  or overlay_open):
+                    elif (torrents and not torrents_dismissed
+                          and _torrent_panel_up(
+                              overlay_open, torrents.status_lines())):
                         # Only consume ESC if the panel is actually on screen.
-                        # torrents_dismissed starts False, so this branch used
-                        # to match on the very first ESC at rest -- swallowing
-                        # it to dismiss a panel that was never drawn. The
-                        # result was three presses to quit where the banner,
-                        # the comment and the docstring all promise two.
-                        # The draw gate is `notice or overlay_open`, so that
-                        # is the condition to mirror here.
+                        #
+                        # This used to read `(notice or overlay_open)`, copied
+                        # from the draw gate at the bottom of the loop. But
+                        # `notice` is SHARED state: push_notice() writes every
+                        # one-line message into it, including the "press Esc
+                        # again to quit" warning this very handler raises. So
+                        # the first ESC armed the quit AND set `notice`, which
+                        # made the second ESC satisfy this branch, set
+                        # torrents_dismissed, and never reach the quit below.
+                        # With libtorrent installed, ESC could not quit the
+                        # app at all; only Q worked. The branch tests missed it
+                        # because they set the states directly and never ran
+                        # the arm-then-confirm sequence that sets `notice`.
+                        #
+                        # What is on screen is not "some notice exists": a bare
+                        # notice is a banner drawn by draw_notice(), and the
+                        # panel is drawn by draw_torrent_overlay() only for the
+                        # infohash prompt or a torrent-status listing. So the
+                        # panel counts as open when the prompt is up, or when
+                        # there is something in the torrent list to show.
                         torrents_dismissed = True
                     elif time.time() < quit_armed_until:
                         running = False

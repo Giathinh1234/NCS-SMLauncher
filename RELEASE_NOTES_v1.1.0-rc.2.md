@@ -208,6 +208,40 @@ what a silently broken render looks like, so the tests assert every mode
 still lights up, that the modes are visually distinct from each other, and
 that a cold cache renders byte-identical to a warm one.
 
+## ESC could not quit the app
+
+Found by pressing the key for real, not by reading the code.
+
+The ESC handler decided the torrent panel was on screen by testing
+`notice or overlay_open`. But `notice` is shared state -- every one-line
+message in the app goes through it, **including the "press Esc again to quit"
+warning that the quit ladder itself raises**. So the first ESC armed the quit
+and set a notice, and the second ESC read that notice, concluded a panel was
+open, dismissed the panel, and never reached the quit.
+
+With libtorrent installed, ESC could not quit HashPlay at all. Only Q worked.
+Without libtorrent the branch is skipped, which is why it had gone unnoticed.
+
+The fix asks whether the panel is genuinely on screen -- the infohash prompt
+being up, or there being torrent status lines to show. A bare notice is a
+banner drawn by `draw_notice()`, not a panel.
+
+The branch tests could not have caught this. They set the modal flags directly
+and never pressed ESC twice in a row, which is the only path that produces the
+notice in the first place; their `torrents` stub had no `status_lines()`, and
+their `push_notice` was a no-op, so the arming notice never existed as far as
+the second press was concerned. One case was worse than silent: it passed a
+`notice` and called it "the panel is on screen", encoding the bug as the
+expected result.
+
+There is now a check that presses ESC on the running app with real OS-level
+key events and watches the process actually exit. Run it yourself:
+
+    HASHPLAY_ESC_TARGET=source python3 tests/test_esc_os_level.py
+
+Verified on the shipped `.app` bundle as well: one press arms, the second
+quits, and Q still quits immediately.
+
 ## Install
 
 Download the build for your platform and check `SHA256SUMS.txt` if you want to
