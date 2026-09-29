@@ -33,11 +33,20 @@ require(appVersionName.isNotEmpty()) {
     "VERSION file at ${versionFile.absolutePath} is empty. " +
         "Put a version like '1.0.0' in it (major.minor.patch)."
 }
-val versionParts = appVersionName.split(".")
+// A prerelease suffix is allowed in the NAME: '1.1.0-rc.1' ships as a
+// prerelease and must not abort the Android build the way a bare
+// three-digit require did. The suffix is carried in versionName only; the
+// versionCode is still derived from the three leading integers, so an rc and
+// its final share a code. That is fine here because these APKs are
+// distributed from GitHub releases, not Google Play. If Play ever becomes a
+// channel, the final must be uploaded with a higher versionCode than its rc.
+val versionCore = appVersionName.substringBefore('-')
+val versionParts = versionCore.split(".")
 require(versionParts.size == 3 && versionParts.all { it.isNotEmpty() && it.all(Char::isDigit) }) {
     "VERSION file at ${versionFile.absolutePath} contains '$appVersionName', " +
-        "which is not a plain major.minor.patch triple. The Android build " +
-        "derives versionCode from those three integers and cannot continue."
+        "which is not a major.minor.patch triple with an optional -suffix. " +
+        "The Android build derives versionCode from those three integers and " +
+        "cannot continue."
 }
 val (versionMajor, versionMinor, versionPatch) = versionParts.map(String::toInt)
 val appVersionCode = versionMajor * 10_000 + versionMinor * 100 + versionPatch

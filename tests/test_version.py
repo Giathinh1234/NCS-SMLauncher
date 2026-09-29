@@ -12,7 +12,12 @@ sys.path.insert(0, "/Users/giathinh/ncs-music-launcher/src")
 
 import version  # noqa: E402
 
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+# A prerelease suffix is allowed. v1.1.0-rc.1 ships as a GitHub
+# prerelease, and this used to be a hard failure that would have blocked
+# the release outright. The suffix is required to be pre-release only:
+# nothing silently passes as a final version.
+SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+FINAL_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def main():
@@ -25,6 +30,11 @@ def main():
     assert SEMVER.match(text), "VERSION is not semver: %r" % (raw,)
     assert "\n" not in text, "VERSION should be a single line"
     print("   VERSION =", text)
+
+    # An rc must be visibly marked. This is the check that stops a half-typed
+    # "1.1.0 " or "1.1.0-rc" from being mistaken for a finished release.
+    is_prerelease = bool(SEMVER.match(text)) and not FINAL_SEMVER.match(text)
+    print("   prerelease =", is_prerelease)
 
     print("2) APP_VERSION reads that file")
     assert version.APP_VERSION == text, (version.APP_VERSION, text)
