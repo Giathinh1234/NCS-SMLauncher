@@ -63,9 +63,25 @@ esac
 
 # Name the artifact the way the in-app updater expects to find it.
 cp "$EXE" "dist/HashPlay-windows-x64.exe"
-cp VERSION "dist/VERSION"
-(cd dist && zip -qry "HashPlay-windows-x64-${VERSION}.zip" \
-    HashPlay-windows-x64.exe VERSION)
+
+# Packaged with Python's zipfile rather than the zip(1) binary. Git Bash on
+# a Windows runner has no zip -- the build got all the way to a working
+# version-checked .exe and then died on "zip: command not found" -- and
+# zipfile is present wherever python is, so this works identically on all
+# three platforms.
+"${PYI[0]}" - "$VERSION" <<'PY'
+import os
+import sys
+import zipfile
+
+version = sys.argv[1]
+out = f"dist/HashPlay-windows-x64-{version}.zip"
+os.makedirs("dist", exist_ok=True)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    z.write("dist/HashPlay-windows-x64.exe", "HashPlay-windows-x64.exe")
+    z.write("VERSION", "VERSION")
+print("packed", out)
+PY
 
 echo "Built:"
 ls -l dist/HashPlay-windows-x64.exe "dist/HashPlay-windows-x64-${VERSION}.zip"
