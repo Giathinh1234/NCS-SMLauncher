@@ -8,10 +8,13 @@ Python sources.
 
 ## Prerequisites
 
-The project targets **Python 3.14**.
+The project builds on **Python 3.13**. Not 3.14: pygame ships no 3.14
+wheels, so pip tries to build it from source and fails on `Unable to run
+sdl-config`. Confirmed on CI -- macOS, Linux and Windows all fail that way
+on 3.14 and all pass on 3.13. Bump this when pygame publishes 3.14 wheels.
 
 ```bash
-brew install python@3.14
+brew install python@3.13
 ```
 
 PyInstaller and the runtime dependencies come from `requirements-dev.txt`
@@ -24,8 +27,8 @@ script below.
 ./scripts/build_venv.sh
 ```
 
-This is idempotent. It finds `python3.14` on `PATH`, falling back to
-`brew --prefix python@3.14`, creates `.venv` if it is missing, upgrades pip,
+This is idempotent. It finds `python3.13` on `PATH`, falling back to
+`brew --prefix python@3.13`, creates `.venv` if it is missing, upgrades pip,
 and installs `requirements-dev.txt`. Re-run it any time the requirements
 change.
 
