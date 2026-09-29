@@ -178,6 +178,17 @@ def _asset_matches_platform(name, platform):
         if "android" in low or low.endswith(".apk"):
             return False
         return "linux" in low
+    if platform == "win32":
+        # Windows ships a bare .exe, and the name says so. Rejecting the
+        # .zip is deliberate: the macos and linux rules above match .zip
+        # because those releases ship a bundle to unpack, and a loose
+        # substring match here would happily offer the wrong platform's
+        # archive.
+        if "android" in low or low.endswith(".apk"):
+            return False
+        if not low.endswith(".exe"):
+            return False
+        return "windows" in low or "win64" in low or "win32" in low
     # Android is not a self-update target: the app ships as an APK through
     # the Play Store, which owns its own update path.
     return False

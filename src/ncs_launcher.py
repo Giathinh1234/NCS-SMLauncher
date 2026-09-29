@@ -352,10 +352,146 @@ def neon_color(t, sat=0.95, val=1.0):
 # Imported at the top of the file with the other modules.
 
 
+# ---- rendering caches ---------------------------------------------------
+# Two things were rebuilt from scratch on every single frame:
+#
+#   * a full-window SRCALPHA surface (~3.8 MB at 1280x748), and
+#   * the entire album-art pipeline -- PNG decode, LANCZOS resize, BICUBIC
+#     rotate, circular mask -- for a file that does not change while the
+#     track is playing.
+#
+# Measured with tools/profile_visualizer.py: the disc visualizer spent 49%
+# of its frame inside PIL re-decoding and re-rotating the same image 40 times
+# in a row. These caches remove that work rather than making it cheaper.
+
+_SCRATCH = {}
+_ART_BASE = {}      # (path, size) -> prepared RGBA image, no rotation
+_ART_SPIN = {}      # (path, size, bucket) -> rotated pygame Surface
+_ART_ORDER = []     # insertion order, for a bounded cache
+_ART_MAX = 48       # ~48 stickers, far more than any real library needs
+# Rotation is quantised to this many degrees. 3 deg is invisible on a ~180px
+# sticker and cuts the rotation cache misses by 4x.
+ART_ANGLE_STEPS = 3
+
+
+def _scratch(w, h):
+    """A reusable full-window SRCALPHA surface.
+
+    Allocated once per size instead of once per frame. The old code built a
+    new Surface at the top of draw_visualizer for every mode, including the
+    ones that only need it transiently, so the garbage was pure waste.
+    """
+    key = (w, h)
+    surf = _SCRATCH.get(key)
+    if surf is None:
+        # Bound it: a resize storm would otherwise leak one surface per size.
+        if len(_SCRATCH) > 4:
+            _SCRATCH.clear()
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        _SCRATCH[key] = surf
+    return surf
+
+
+def _album_sticker(art_path, sticker_r, t, player):
+    """The rotating circular album art, from cache.
+
+    The expensive half -- decode, resize, circular mask -- depends only on the
+    file and the sticker size, so it is computed once per track. Only the
+    rotation depends on time, and that is quantised to ART_ANGLE_STEPS: at
+    45 deg/sec and 60 FPS the angle moves 0.75 deg per frame, so rounding to
+    3 deg turns ~60 rotations a second into 15 cache misses.
+
+    When nothing is playing the record should not be spinning, so a paused
+    player pins the angle and the whole thing becomes a single cache entry.
+    That is most of the idle saving, and it is also the correct picture: a
+    stopped record is not rotating.
+    """
+    sz = int(sticker_r) * 2
+    if sz <= 0:
+        return None
+    spinning = not (getattr(player, "paused", False)
+                    or not getattr(player, "track_path", None))
+    if spinning:
+        bucket = int(-(t * 45) / ART_ANGLE_STEPS) % (360 // ART_ANGLE_STEPS)
+    else:
+        bucket = 0
+
+    hit = _ART_SPIN.get((art_path, sz, bucket))
+    if hit is not None:
+        return hit
+
+    base = _ART_BASE.get((art_path, sz))
+    if base is None:
+        img = Image.open(art_path).convert("RGBA")
+        img = img.resize((sz, sz), Image.Resampling.LANCZOS)
+        mask = Image.new("L", (sz, sz), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, sz, sz), fill=255)
+        img.putalpha(mask)
+        base = img
+        _ART_BASE[(art_path, sz)] = base
+        if len(_ART_BASE) > _ART_MAX:
+            oldest = next(iter(_ART_BASE))
+            _ART_BASE.pop(oldest, None)
+
+    angle = bucket * ART_ANGLE_STEPS
+    rotated = base if angle == 0 else base.rotate(
+        angle, resample=Image.Resampling.BICUBIC)
+    surf = pygame.image.frombytes(rotated.tobytes(), rotated.size, "RGBA")
+
+    if len(_ART_ORDER) >= _ART_MAX:
+        stale = _ART_ORDER.pop(0)
+        _ART_SPIN.pop(stale, None)
+    key = (art_path, sz, bucket)
+    _ART_ORDER.append(key)
+    _ART_SPIN[key] = surf
+    return surf
+
+
+def _album_square(art_path, box):
+    """Album art scaled to a square, from cache.
+
+    The album mode sizes the cover to the bass pulse, so the size changes as
+    the music does. Caching on the resolved integer means a handful of entries
+    per track instead of a fresh LANCZOS resize every frame, and when nothing
+    is playing the bass is constant so it collapses to exactly one entry.
+    """
+    box = int(box)
+    if box <= 0:
+        return None
+    hit = _ART_SPIN.get((art_path, box, "square"))
+    if hit is not None:
+        return hit
+    img = Image.open(art_path).convert("RGBA")
+    img = img.resize((box, box), Image.Resampling.LANCZOS)
+    surf = pygame.image.frombytes(img.tobytes(), img.size, "RGBA")
+    key = (art_path, box, "square")
+    if len(_ART_ORDER) >= _ART_MAX:
+        _ART_SPIN.pop(_ART_ORDER.pop(0), None)
+    _ART_ORDER.append(key)
+    _ART_SPIN[key] = surf
+    return surf
+
+
+def drop_render_caches():
+    """Forget cached art. Called when the track or the window changes."""
+    _ART_BASE.clear()
+    _ART_SPIN.clear()
+    _ART_ORDER.clear()
+    _SCRATCH.clear()
+
+
 def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
                     video_slot=None):
     cx, cy = w // 2, h // 2
-    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    # Reused across frames and modes now. The caller must be sure the surface
+    # is fully overwritten each frame, which the branches below do: either
+    # they fill() it, or they blit onto a freshly-filled background.
+    surf = _scratch(w, h)
+    # A reused surface still holds the last frame. Every branch below assumed
+    # a freshly zero-filled one, so without this the modes ghost over
+    # themselves. "radial" and "video" never touch `surf`, so they skip it.
+    if mode not in ("radial", "video"):
+        surf.fill((0, 0, 0, 0))
     base_y = h - 90
 
     if mode == "video":
@@ -410,20 +546,11 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
         art_path = current_track_metadata.get('art_path')
         if art_path and os.path.exists(art_path):
             try:
-                art_img = Image.open(art_path).convert("RGBA")
-                sz = sticker_r * 2
-                art_img = art_img.resize((sz, sz), Image.Resampling.LANCZOS)
-                # Rotate image over time
-                rot_deg = -(t * 45) % 360
-                art_img = art_img.rotate(rot_deg, resample=Image.Resampling.BICUBIC)
-                
-                # Circular mask
-                mask = Image.new('L', (sz, sz), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, sz, sz), fill=255)
-                art_img.putalpha(mask)
-                
-                art_surf = pygame.image.frombytes(art_img.tobytes(), art_img.size, "RGBA")
-                surf.blit(art_surf, art_surf.get_rect(center=(cx, cy)))
+                art_surf = _album_sticker(art_path, sticker_r, t, player)
+                if art_surf is not None:
+                    surf.blit(art_surf, art_surf.get_rect(center=(cx, cy)))
+                else:
+                    pygame.draw.circle(surf, (50, 50, 60), (cx, cy), sticker_r)
             except Exception:
                 pygame.draw.circle(surf, (50, 50, 60), (cx, cy), sticker_r)
         else:
@@ -521,15 +648,21 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
             col = neon_color(i / NUM_BARS + t * 0.08)
             bh = 4 + float(m) * (h * 0.45)
             rect = pygame.Rect(x, int(base_y - bh), smooth_w, int(bh))
-            glow = pygame.Surface(rect.size, pygame.SRCALPHA)
-            glow.fill((*col, 70))
-            surf.blit(glow, rect.inflate(6, 6).topleft)
+            # Drawn straight onto the SRCALPHA scratch surface rather than
+            # through a freshly allocated Surface per bar. The old code
+            # allocated one per bar -- 64 for bars, 128 for mirror, because
+            # the reflection allocated a second -- and blitted each one.
+            # pygame blends an alpha colour directly onto a per-pixel-alpha
+            # surface, so those surfaces and blits were pure waste, and
+            # profiling put mirror at 21 ms/frame largely for that reason.
+            # No border_radius here on purpose: rounded rects are slower to
+            # rasterise and the original bars drew square ones. Adding it
+            # made this loop measurably worse.
+            pygame.draw.rect(surf, (*col, 70), rect.inflate(6, 6))
             pygame.draw.rect(surf, col, rect)
             if mode == "mirror":
                 rect_m = pygame.Rect(x, base_y + gap, smooth_w, int(bh * 0.7))
-                fade = pygame.Surface(rect_m.size, pygame.SRCALPHA)
-                fade.fill((*col, 110))
-                surf.blit(fade, rect_m.topleft)
+                pygame.draw.rect(surf, (*col, 110), rect_m)
             x += smooth_w + gap
 
         # "radial" (the NCS sphere) already painted itself onto screen

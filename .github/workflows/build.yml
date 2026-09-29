@@ -1,7 +1,10 @@
 name: Build
 
-# Tags are the release trigger: pushing v* is what turns a green build into
-# an asset on a GitHub release that the in-app updater can then find.
+# On a v* tag this workflow builds every platform AND publishes the artifacts
+# to a GitHub release. That release step used to be described in the comment
+# this one replaced, and did not exist: a tagged build produced artifacts
+# nobody could download, and the in-app updater had nothing it could find. It
+# is the `release` job at the bottom now.
 on:
   push:
     branches: [main]
@@ -20,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.13"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -29,13 +32,15 @@ jobs:
         run: ./build_macos_app.sh
       - name: Zip the bundle
         run: cd dist && zip -qry HashPlay.app.zip HashPlay.app
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Collect under the name the updater looks for
+        run: |
+          mkdir -p upload
+          cp dist/HashPlay upload/HashPlay-macos-arm64
+          cp dist/HashPlay.app.zip upload/ || true
+      - uses: actions/upload-artifact@v4
         with:
           name: HashPlay-macos-arm64
-          path: |
-            dist/HashPlay
-            dist/HashPlay.app
+          path: upload/
 
   linux:
     name: Linux (x86_64)
@@ -44,21 +49,104 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.13"
       - name: Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-2.0-0 portaudio19-dev
+          sudo apt-get install -y libsdl2-2.0-0 portaudio19-dev ffmpeg
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements-dev.txt
       - name: Build the single-file executable
         run: ./scripts/build_linux.sh
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Collect under the name the updater looks for
+        run: |
+          mkdir -p upload
+          cp dist/HashPlay upload/HashPlay-linux-x86_64
+          cp dist/*.tar.gz upload/ || true
+      - uses: actions/upload-artifact@v4
         with:
           name: HashPlay-linux-x86_64
-          path: |
-            dist/HashPlay
-            dist/*.tar.gz
+          path: upload/
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        # The build script is a bash script and PyInstaller behaves better
+        # with a real shell on Windows, so use Git Bash for the whole job.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Build the single-file executable
+        run: ./scripts/build_windows.sh
+      - name: Collect under the name the updater looks for
+        run: |
+          mkdir -p upload
+          cp dist/HashPlay-windows-x64.exe upload/
+          cp dist/*.zip upload/ || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HashPlay-windows-x64
+          path: upload/
+
+  # The names the updater can actually match live in src/updater.py's
+  # _asset_matches_platform. A release that does not use them is invisible to
+  # the app no matter how good the build is -- which is exactly what happened
+  # for every release up to v1.1.0-rc.1.
+  asset-names:
+    name: Release asset names are discoverable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check the names against the real matcher
+        run: python tools/check_asset_names.py
+
+  release:
+    name: Publish release (tag only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, linux, windows, asset-names]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download every platform's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Assemble the payload
+        run: |
+          mkdir -p payload
+          find dist -type f \( \
+            -name 'HashPlay-macos-arm64' -o \
+            -name 'HashPlay-linux-x86_64' -o \
+            -name 'HashPlay-windows-x64.exe' -o \
+            -name '*.zip' -o \
+            -name '*.tar.gz' \) -exec cp {} payload/ \;
+          ls -la payload/
+      - name: Checksums
+        run: |
+          cd payload
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or update the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: payload/*
+          generate_release_notes: true
+          # A tag carrying a pre-release marker stays a pre-release, so
+          # v1.1.0-rc.1 is never offered to someone as the finished 1.1.0.
+          prerelease: ${{ contains(github.ref_name, '-rc') }}

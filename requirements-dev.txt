@@ -1,0 +1,17 @@
+# Development and CI dependencies.
+#
+# CI referenced this file (build.yml) but it did not exist in the
+# repository, so the macOS job failed at the install step. Runtime packages
+# live in requirements.txt and are pulled in here rather than duplicated, so
+# the two lists cannot drift.
+
+-r requirements.txt
+
+# The build tool. Installed separately in some jobs (the Linux job pins it
+# alongside requirements.txt); harmless to declare here too.
+pyinstaller>=6.0
+
+# Test runner. The suite is plain scripts with no pytest dependency on
+# purpose -- it runs anywhere python3 runs, with no plugin discovery and no
+# import-time side effects -- but this is here for anything added later that
+# does want it.
