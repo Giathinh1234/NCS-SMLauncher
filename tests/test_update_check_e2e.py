@@ -19,6 +19,12 @@ PORT = int(os.environ.get("HASHPLAY_TEST_PORT", "8797"))
 
 fails = []
 
+# Read VERSION rather than hardcoding it. A literal version in this file made
+# it fail on every version bump for no reason -- the point is that the app
+# reports whatever it was built as.
+with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as _fh:
+    BUILT_VERSION = _fh.read().strip()
+
 
 def check(label, cond, detail=""):
     if cond:
@@ -65,8 +71,8 @@ try:
     print("1) the default path must not surface an unverified prerelease")
     res = call("update_check", token=token)
     result = res.get("result", res)
-    check("it reports what is running",
-          result.get("running") == "1.1.0-rc.1", result.get("running"))
+    check(f"it reports the version it was built as ({BUILT_VERSION})",
+          result.get("running") == BUILT_VERSION, result.get("running"))
     check("and reports no update by default",
           result.get("update") is None, result.get("update"))
 

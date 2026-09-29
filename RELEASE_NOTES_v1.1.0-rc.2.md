@@ -1,8 +1,14 @@
-# HashPlay 1.1.0-rc.1
+# HashPlay 1.1.0-rc.2
 
 A release candidate. **Marked prerelease on purpose** — the escape-hatch
 behaviour below has not been manually confirmed on a real keyboard, and this
 is the build you can try if you want to help check it.
+
+**What changed from rc.1:** this is the first candidate with **Windows and
+Linux** builds. rc.1 was macOS only, because those platforms had never been
+built. Both are now produced on every tag and verified on real runners. The
+visualizer work also landed here: the non-NCS-ball visualizers were
+overrunning the frame budget and are now 5-14x faster.
 
 Nothing in the in-app updater will offer this to you automatically.
 Prereleases are opt-in, so a build this unverified cannot be pushed at
