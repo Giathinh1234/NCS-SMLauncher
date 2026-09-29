@@ -90,7 +90,19 @@ try:
     print("    since this process is already running the rc")
     sys.path.insert(0, os.path.join(ROOT, "src"))
     import updater
-    for flags, want in ((False, None), (True, "1.1.0-rc.1")):
+
+    # Ask the live API what the newest prerelease actually is, rather than
+    # hardcoding a version. Hardcoding meant this test broke every time a new
+    # candidate was cut, which trains people to ignore it.
+    # A sentinel OLDER than anything published, so "newest" really is newest.
+    # (Using a high version here returns None for the opposite reason: nothing
+    # is newer than it, which is the same None that means "no prerelease".)
+    probe = updater.fetch_latest(current="0.0.1", include_prerelease=True)
+    newest_pre = None if probe is None else probe.version
+    check("the published prerelease can be discovered",
+          newest_pre is not None, newest_pre)
+
+    for flags, want in ((False, None), (True, newest_pre)):
         info = updater.fetch_latest(current="1.0.1",
                                     include_prerelease=flags)
         got = None if info is None else info.version
