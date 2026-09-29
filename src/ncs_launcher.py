@@ -1384,11 +1384,47 @@ def main():
         video_slot.request(src, sync_to=player.position() if player.track_path else 0.0)
         return {"video": src, "pinned": True}
 
+    def api_cmd_update_check(a):
+        """Report whether a newer release exists. Changes nothing.
+
+        This is deliberately check-only. src/updater.py can download, verify
+        and stage an update, and apply it on the next launch, but wiring that
+        to a remote-callable command would let anything that can reach the
+        loopback API replace the binary. Reporting is safe; installing is a
+        decision for a person at the keyboard.
+        """
+        include_pre = bool(a.get("prerelease"))
+        try:
+            # Imported here, not at module scope: this is the only place in
+            # the launcher that needs them, and pulling the updater in
+            # unconditionally would cost startup time for a feature most
+            # sessions never touch.
+            import updater
+            import version
+            info = updater.fetch_latest(current=version.APP_VERSION,
+                                        include_prerelease=include_pre)
+        except Exception as exc:
+            push_notice(("error", f"update check failed: {exc}"), 6.0)
+            return {"ok": False, "error": str(exc),
+                    "running": version.APP_VERSION}
+        if info is None:
+            msg = "up to date" if not include_pre else "no newer release"
+            push_notice(("info", f"HashPlay {msg}"), 4.0)
+            return {"ok": True, "running": version.APP_VERSION,
+                    "update": None}
+        notice = ("info", f"HashPlay {info.version} available")
+        push_notice(notice, 6.0)
+        return {"ok": True, "running": version.APP_VERSION,
+                "update": {"version": info.version, "name": info.name,
+                           "size": info.size,
+                           "prerelease": info.prerelease}}
+
     API_HANDLERS = {
         "play": api_cmd_play, "pause": api_cmd_pause, "resume": api_cmd_resume,
         "next": api_cmd_next, "prev": api_cmd_prev, "seek": api_cmd_seek,
         "volume": api_cmd_volume, "muted": api_cmd_muted,
         "visualizer": api_cmd_visualizer, "video": api_cmd_video,
+        "update_check": api_cmd_update_check,
         "__tracks": api_cmd_tracks, "__search": api_cmd_search,
     }
 

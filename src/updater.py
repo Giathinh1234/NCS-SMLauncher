@@ -248,8 +248,44 @@ def pick_asset(info, platform=None):
     return None
 
 
-def fetch_latest(current=None, include_prerelease=True, timeout=TIMEOUT):
-    """Look up the newest acceptable release. None means "no update"."""
+def _ssl_context():
+    """An SSL context that can actually verify api.github.com.
+
+    The system trust store on this machine is missing the issuer chain
+    ("unable to get local issuer certificate"), so the very first thing the
+    updater did was raise SSLCertVerificationError -- which its own broad
+    `except Exception: return None` turned into a silent "no update
+    available", for every release, forever. That is a fifth independent
+    reason the updater could not work, and it is invisible precisely because
+    the failure is swallowed.
+
+    certifi ships a CA bundle, so prefer it. A frozen build may not have one
+    (see HashPlay.spec), hence the fallbacks, and the reason this is
+    resolvable rather than a hard requirement.
+    """
+    try:
+        import ssl
+        try:
+            import certifi
+        except ImportError:
+            certifi = None
+        if certifi is not None:
+            return ssl.create_default_context(cafile=certifi.where())
+        return ssl.create_default_context()
+    except Exception:
+        return None
+
+
+def fetch_latest(current=None, include_prerelease=False, timeout=TIMEOUT):
+    """Look up the newest acceptable release. None means "no update".
+
+    include_prerelease defaults to False here as well as on self_update.
+    Leaving it True at this level was a footgun: it looked correct, because
+    self_update passed the flag explicitly, but any other caller -- or the
+    next person to call it -- got prereleases by default. An rc that nobody
+    has manually verified should cost a deliberate opt-in at every level,
+    not just the top one.
+    """
     url = API.format(repo=REPO)
     if not include_prerelease:
         url += "?per_page=10"
@@ -257,7 +293,8 @@ def fetch_latest(current=None, include_prerelease=True, timeout=TIMEOUT):
         url, headers={"Accept": "application/vnd.github+json",
                       "User-Agent": "HashPlay-updater"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        _ctx = _ssl_context()
+        with urllib.request.urlopen(req, timeout=timeout, context=_ctx) as resp:
             payload = json.loads(resp.read().decode("utf-8", "replace"))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
         return None

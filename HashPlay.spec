@@ -10,6 +10,11 @@ hidden = (collect_submodules('libtorrent') + [
     'ncs_sphere', 'ncs_video', 'ncs_disc_player', 'media_keys',
     'config', 'actions', 'migrations', 'version',
     'streaming_source', 'library_ops', 'updater', 'settings_panel',
+    # certifi is imported inside updater._ssl_context() and its CA bundle is
+    # data, not code, so neither the import nor cacert.pem is collected
+    # automatically. Without it a frozen build cannot verify api.github.com
+    # and the updater reports "no update available" forever, silently.
+    'certifi',
 ])
 
 # version.py reads this at runtime, and a frozen bundle has no repo root to

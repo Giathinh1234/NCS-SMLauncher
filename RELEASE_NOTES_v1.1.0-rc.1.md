@@ -54,10 +54,10 @@ frames. It now seeks once.
 - **Escape needed three presses to quit**, in a fresh install. The first was
   spent dismissing a torrent panel that was never on screen. It is two now.
 
-## The self-updater was completely dead
+## The self-updater did not work at all, and was not even reachable
 
 Not "unreliable" — it could not have worked for any release this project has
-ever produced, for four independent reasons, all fixed:
+ever produced, for five independent reasons, all fixed:
 
 1. It could not see our own macOS asset. The filter accepted only `.app.zip`
    or exactly `HashPlay`; releases publish `HashPlay-macos-arm64`. Every
@@ -69,6 +69,26 @@ ever produced, for four independent reasons, all fixed:
 4. The swap relaunched with `nohup "$TARGET"` — but on macOS that target is
    `HashPlay.app`, a directory. You quit, the swap happens, and the app never
    comes back. It uses `open` now.
+5. Every request to GitHub failed TLS verification, because the system trust
+   store on this machine is missing the issuer chain. That is the one worth
+   dwelling on: the updater's own `except Exception: return None` turned the
+   `SSLCertVerificationError` into a quiet "you are up to date", so the
+   feature reported success while being completely broken. It now uses
+   certifi, which is bundled.
+
+And the fifth thing was the real one: **nothing in the app ever called it.**
+The module shipped in the bundle and had tests, but no import, no dispatch
+entry, no key — so there was no path from the interface to the updater at
+all. Describing it as a "shipped headline feature" was not accurate.
+
+There is now an `update_check` command that reports whether a newer release
+exists. It is deliberately check-only: anything that can reach the loopback
+API can ask, but nothing can replace your binary without you deciding to.
+Installing is still a manual step, and that is a known gap, not an oversight.
+
+A related caveat worth stating plainly: that `except Exception: return None`
+is exactly the shape of code that hides bugs. It is the reason four of these
+five went unnoticed. Some failures should be reported, not swallowed.
 
 ## Let your bots and agents drive it
 

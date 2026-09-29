@@ -367,7 +367,7 @@ class ControlAPI:
                     return self._do_webhook(args)
                 if path in ("/play", "/pause", "/resume", "/next", "/prev",
                             "/seek", "/volume", "/muted", "/visualizer",
-                            "/video"):
+                            "/video", "/update_check"):
                     return self._reply(path.lstrip("/"), args)
                 self._deny(404, f"no such endpoint: {path}")
 

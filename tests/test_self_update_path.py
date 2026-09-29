@@ -112,8 +112,28 @@ try:
     check("self_update passes the current version",
           calls.get("current") is not None, calls.get("current"))
 
+    # ------------------------------- a 1.0.1 user must not be shown the rc
+    print("3b) safety: the default path must not offer an unverified rc")
+    import inspect
+    for fn in (updater.fetch_latest, updater.self_update):
+        d = inspect.signature(fn).parameters["include_prerelease"].default
+        check(f"{fn.__name__}.include_prerelease defaults to False", d is False, d)
+
+    # --------------------------------------- TLS, or nothing works at all
+    print("4) the updater must be able to verify api.github.com")
+    ctx = updater._ssl_context()
+    check("_ssl_context returns a context", ctx is not None)
+    import socket
+    try:
+        with socket.create_connection(("api.github.com", 443), timeout=10) as sk:
+            with ctx.wrap_socket(sk, server_hostname="api.github.com") as ss:
+                check("it verifies the real GitHub certificate", True, ss.version())
+    except Exception as e:
+        check("it verifies the real GitHub certificate", False,
+              f"{type(e).__name__}: {e}")
+
     # ------------------------------------------- the version string itself
-    print("4) an rc must not outrank the release it precedes")
+    print("5) an rc must not outrank the release it precedes")
     check("1.1.0-rc.1 does not look newer than 1.1.0",
           version.is_newer("1.1.0-rc.1", "1.1.0") is False,
           version.parse("1.1.0-rc.1"))
