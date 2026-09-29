@@ -1,11 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
-# libtorrent is optional at runtime and ships compiled extensions; the rest are
-# pure-python modules reached through src/ (pathex below), listed explicitly
-# because a few of them are imported lazily inside a function -- notably
-# settings_panel, which would otherwise be missing from a frozen build.
-hidden = (collect_submodules('libtorrent') + [
+# libtorrent is OPTIONAL at runtime -- ncs_launcher.py imports it in a
+# try/except and sets lt = None when it is missing, disabling torrents and
+# nothing else. collect_submodules has to be guarded the same way, or a
+# machine without the wheel fails the entire build rather than producing an
+# app that simply cannot download torrents. The first platform to need this
+# was Windows, where a fresh runner may not get a working libtorrent wheel.
+try:
+    _lt = collect_submodules('libtorrent')
+except Exception:                      # noqa: BLE001 - see above
+    _lt = []
+    print("warning: libtorrent not available; building without torrent support")
+
+# The rest are pure-python modules reached through src/ (pathex below), listed
+# explicitly because a few of them are imported lazily inside a function --
+# notably settings_panel, which would otherwise be missing from a frozen build.
+hidden = (_lt + [
     'sounddevice', 'miniaudio',
     'ncs_sphere', 'ncs_video', 'ncs_disc_player', 'media_keys',
     'config', 'actions', 'migrations', 'version',

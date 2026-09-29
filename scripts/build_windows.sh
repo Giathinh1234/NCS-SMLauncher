@@ -30,11 +30,26 @@ echo "Building HashPlay ${VERSION} (${BUILD}) for Windows x64"
 # and give up the version self-check.
 "${PYI[@]}" --clean --noconfirm HashPlay.spec
 
-EXE="dist/HashPlay/HashPlay.exe"
-if [ ! -f "$EXE" ]; then
-    echo "error: expected $EXE but it was not produced" >&2
+# The spec is a onefile build, so Windows produces dist/HashPlay.exe and
+# macOS produces dist/HashPlay. Handle both layouts anyway: a onefile ->
+# onedir switch in the spec would otherwise fail here with a confusing
+# "not produced" message rather than saying which path was looked for.
+EXE=""
+for candidate in dist/HashPlay.exe dist/HashPlay/HashPlay.exe; do
+    if [ -f "$candidate" ]; then
+        EXE="$candidate"
+        break
+    fi
+done
+if [ -z "$EXE" ]; then
+    echo "error: no built executable found. Looked for:" >&2
+    echo "         dist/HashPlay.exe" >&2
+    echo "         dist/HashPlay/HashPlay.exe" >&2
+    echo "         what dist/ actually contains:" >&2
+    ls -R dist 2>/dev/null | head -20 >&2
     exit 1
 fi
+echo "built $EXE"
 
 # Sanity check: the binary must report the version we built, not the 0.0.0
 # fallback. A frozen bundle that lost VERSION is a shipped app that can never
