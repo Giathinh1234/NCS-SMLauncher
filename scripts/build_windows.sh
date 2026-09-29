@@ -21,10 +21,14 @@ fi
 
 echo "Building HashPlay ${VERSION} (${BUILD}) for Windows x64"
 
-# --windowed, not --console: a music player should not spawn a black console
-# window behind the UI. The spec already sets this for the bundle, but being
-# explicit here means the flag survives an edit to the spec.
-"${PYI[@]}" --clean --noconfirm --windowed HashPlay.spec
+# No --windowed here: PyInstaller refuses makespec options ("option(s) not
+# allowed ... makespec options not valid when a .spec file is given"), and
+# HashPlay.spec already sets console=True. That is deliberate on our side --
+# --version and the API bind diagnostics both write to stdout, and CI checks
+# the built binary reports the right version. A release build that wants a
+# silent double-click experience should set console=False in the spec instead,
+# and give up the version self-check.
+"${PYI[@]}" --clean --noconfirm HashPlay.spec
 
 EXE="dist/HashPlay/HashPlay.exe"
 if [ ! -f "$EXE" ]; then

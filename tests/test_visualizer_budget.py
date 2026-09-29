@@ -26,12 +26,13 @@ import ncs_launcher as L                              # noqa: E402
 W, H = 1280, 748
 FRAME_BUDGET_MS = 16.7
 
-# Per-mode ceilings. Measured after the fix: bars 1.6, mirror 1.5, disc 2.4,
-# album 7.7, radial 12.6. The NCS sphere is the point of the app and is
+# Per-mode ceilings. Measured after the fix: bars 1.9, mirror 1.5, disc 2.3,
+# album 3.1, radial 12.3. Before it: bars 13.9, mirror 21.2, disc 17.4,
+# album 10.0. The NCS sphere is the point of the app and is
 # allowed the most; these are ~2x measured for margin, and everything non-ball
 # is budgeted against the 60 FPS frame time.
 BUDGETS_MS = {
-    "bars": 4.0, "mirror": 4.0, "disc": 5.0, "album": 11.0, "radial": 16.0,
+    "bars": 4.0, "mirror": 4.0, "disc": 5.0, "album": 6.0, "radial": 16.0,
 }
 
 fails = []

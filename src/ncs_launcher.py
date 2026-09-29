@@ -372,6 +372,10 @@ _ART_MAX = 48       # ~48 stickers, far more than any real library needs
 # Rotation is quantised to this many degrees. 3 deg is invisible on a ~180px
 # sticker and cuts the rotation cache misses by 4x.
 ART_ANGLE_STEPS = 3
+# Album cover size is quantised to this many pixels for the same reason:
+# the bass pulse moves it every frame, and an unquantised key misses every
+# time and evicts the cache it just filled.
+ART_SIZE_STEPS = 16
 
 
 def _scratch(w, h):
@@ -451,11 +455,18 @@ def _album_square(art_path, box):
     """Album art scaled to a square, from cache.
 
     The album mode sizes the cover to the bass pulse, so the size changes as
-    the music does. Caching on the resolved integer means a handful of entries
-    per track instead of a fresh LANCZOS resize every frame, and when nothing
-    is playing the bass is constant so it collapses to exactly one entry.
+    the music does. Caching on the raw integer therefore missed on almost
+    every frame and then evicted its own cache, so the LANCZOS resize ran
+    every frame anyway -- cProfile still had album at 44% inside PIL.
+
+    So the size is quantised before it is used as a key. The bass pulse
+    moves the cover by a dozen pixels or so, and rounding to
+    ART_SIZE_STEPS collapses that to a handful of distinct sizes per track,
+    which is what makes the cache actually hit. The step is invisible: the
+    cover changes size by 16px across a range it was already moving through
+    smoothly.
     """
-    box = int(box)
+    box = int(box) // ART_SIZE_STEPS * ART_SIZE_STEPS
     if box <= 0:
         return None
     hit = _ART_SPIN.get((art_path, box, "square"))
@@ -470,6 +481,24 @@ def _album_square(art_path, box):
     _ART_ORDER.append(key)
     _ART_SPIN[key] = surf
     return surf
+
+
+_NO_ART_LABEL = []
+
+
+def _no_art_label():
+    """The "NO ALBUM ART" placeholder, rendered once.
+
+    It used to construct a SysFont and render the string on every frame of
+    every track that has no cover art, which is most of a library with no
+    embedded artwork.
+    """
+    if not _NO_ART_LABEL:
+        font = pygame.font.SysFont("consolas,menlo,dejavusansmono", 18,
+                                   bold=True)
+        _NO_ART_LABEL.append(
+            font.render("NO ALBUM ART", True, (120, 130, 150)))
+    return _NO_ART_LABEL[0]
 
 
 def drop_render_caches():
@@ -602,9 +631,9 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
         
         if art_path and os.path.exists(art_path):
             try:
-                art_img = Image.open(art_path).convert("RGBA")
-                art_img = art_img.resize((pulse_box, pulse_box), Image.Resampling.LANCZOS)
-                art_surf = pygame.image.frombytes(art_img.tobytes(), art_img.size, "RGBA")
+                art_surf = _album_square(art_path, pulse_box)
+                if art_surf is None:
+                    raise ValueError("degenerate art size")
                 surf.blit(art_surf, art_surf.get_rect(center=(cx, cy)))
                 # Sleek border
                 border_rect = pygame.Rect(0, 0, pulse_box, pulse_box)
@@ -620,10 +649,10 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
             box_rect.center = (cx, cy)
             pygame.draw.rect(surf, (20, 22, 30), box_rect, border_radius=6)
             pygame.draw.rect(surf, glow_col, box_rect, 2, border_radius=6)
-            # Default music note / placeholder text inside box
-            ph_font = pygame.font.SysFont("consolas,menlo,dejavusansmono", 18, bold=True)
-            txt = ph_font.render("NO ALBUM ART", True, (120, 130, 150))
-            surf.blit(txt, txt.get_rect(center=(cx, cy)))
+            # Default music note / placeholder text inside box. Cached: the
+            # old code built a SysFont and rendered this string on every
+            # frame, for a message that only changes when you switch tracks.
+            surf.blit(_no_art_label(), _no_art_label().get_rect(center=(cx, cy)))
 
         # Bottom audio visualizer mini-bar right beneath the square album
         avail_w = int(pulse_box * 0.95)
