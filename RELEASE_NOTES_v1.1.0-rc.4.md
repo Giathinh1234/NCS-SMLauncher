@@ -1,11 +1,25 @@
-# HashPlay 1.1.0-rc.3
+# HashPlay 1.1.0-rc.4
 
 A release candidate. **Marked prerelease on purpose** — the escape-hatch
 behaviour below has not been manually confirmed on a real keyboard, and this
 is the build you can try if you want to help check it.
 
+**New in rc.4:**
+
+- **The app no longer aborts a few seconds after opening.** rc.3 crashed
+  every single time, seconds after launch. Two faults in the macOS media-key
+  event tap: a constant name (`kCGEventTapDownOnMediaKey`) that does not exist
+  in any pyobjc release, referenced bare in a tuple, so it raised
+  `AttributeError` on *every* event and pyobjc turned that into an uncaught
+  `NSException`; and the timeout handler calling `CGEventTapEnable(None, ...)`,
+  which segfaults. If you could not see the app, this is why.
+- **A lite build** on macOS: no control API, no NCS ball, 19 MB less memory.
+  Details and the measured numbers are in the lite section below.
+- ESC fix and the Windows/Linux builds carried over from rc.3 unchanged.
+
 **What changed from rc.3:** ESC could not quit the app when libtorrent was
-installed. See the section below -- it is the reason this candidate exists.
+installed. See the section below -- it is one of the two reasons this
+candidate exists.
 
 **What changed from rc.1:** rc.1 was macOS only; rc.2 and rc.3 have **Windows
 and Linux** builds too. rc.1 was macOS only, because those platforms had never been
@@ -259,15 +273,27 @@ Measured at 1280x748, both builds drawing every mode they offer:
 
 | build | peak memory |
 |---|---|
-| full | 125.2 MB |
-| lite | 106.2 MB |
-| **saved** | **19.0 MB (15%)** |
+| full | 130.8 MB |
+| lite | 105.7 MB |
+| **saved** | **25.1 MB (19%)** |
 
-Same binary size, same codebase, one flag (`HASHPLAY_LITE=1`) — there is no
-second copy of the app to drift out of sync. `ncs_sphere` is now imported on
-first draw rather than at startup, which is what makes the saving real: a
-build that merely hid the mode from the list would still have loaded the
-module and allocated the memory.
+Both figures come from the same run of `tests/test_lite_memory.py`, which asks
+the launcher for its own mode list rather than keeping a copy — an earlier
+version kept a copy, the two drifted, and the test reported a 2 MB saving
+between two builds that were byte-for-byte identical.
+
+Same codebase, one constant (`BUILD_LITE` in `src/build_variant.py`) that the
+build script flips — there is no second copy of the app to drift out of sync.
+`ncs_sphere` is now imported on first draw rather than at startup, which is
+what makes the saving real: a build that merely hid the mode from the list
+would still have loaded the module and allocated the memory.
+
+Worth knowing if you build this yourself: the variant started out as an
+environment variable, and the first lite binary that way was **not lite** — it
+opened a listening socket and wrote a token file while advertising itself as
+lite. PyInstaller reads imports, not the environment, so the flag never made
+it into the binary. `scripts/verify_lite_binary.sh` now runs the finished
+bundle and checks the socket, the token file, and that it stays alive.
 
 You lose remote control (bots, scripts, `hashplay-ctl`) and the ball. You keep
 playback, the library, the video layer, settings, keymaps, and the first-run

@@ -50,9 +50,8 @@ import hashlib
 import numpy as np
 
 from media_keys import MediaKeyTap, open_accessibility_settings
-from ncs_sphere import draw_ncs_sphere
-import ncs_video
 import config as appconfig
+from build_variant import BUILD_LITE, BUILD_PROFILE
 import actions as appactions
 import migrations as appmigrations
 
@@ -349,7 +348,142 @@ def neon_color(t, sat=0.95, val=1.0):
 # --------------------------------------------------------------------------
 # The NCS sphere lives in its own module (src/ncs_sphere.py) so it can be
 # iterated on and benchmarked headlessly without importing the whole app.
-# Imported at the top of the file with the other modules.
+#
+# Imported LAZILY, on first use, rather than at the top of this file. A top-
+# level import meant a lite build -- which never draws the ball -- still
+# loaded the module and its numpy kernel caches, so the memory it was meant to
+# save was allocated regardless. The name is resolved on the first draw and
+# cached, so the cost is one dict lookup per frame afterwards.
+
+
+# "radial" (the NCS ball) is the one visualizer holding real memory -- 16.6 MB
+# peak against ~0 MB for the rest, from its cached splat kernels. Lite builds
+# drop it rather than merely hiding it, so the module is never imported and the
+# memory is never allocated.
+#
+# BUILD_LITE pins the variant; cfg["lite"] is the user-overridable half. A lite
+# BUILD cannot be talked out of it by a settings file.
+def build_profile(cfg=None):
+    """Which tier this build is: "full", "lite", or "micro".
+
+    One answer, used by every gate. These were each computing it separately at
+    one point, and a fix to one left the others broken -- so they ask here.
+
+    BUILD_PROFILE pins the build; cfg["lite"] is the user-overridable half, so
+    a "micro" build cannot be talked up to "full" by a settings file.
+    """
+    pinned = BUILD_PROFILE
+    if pinned in ("lite", "micro"):
+        return pinned
+    return "lite" if (cfg or {}).get("lite") else "full"
+
+
+def is_lite(cfg=None):
+    """Any stripped build? (True for both "lite" and "micro".)"""
+    return build_profile(cfg) != "full"
+
+
+def is_micro(cfg=None):
+    """The smallest tier: no control API, no NCS ball, no video, no torrents."""
+    return build_profile(cfg) == "micro"
+
+
+def VIS_MODES(cfg=None):
+    """The visualizer modes this build can actually reach, in cycle order.
+
+    One definition, used by the app and by the memory test. The test used to
+    keep its own copy of this list, and when the two drifted it reported 0 MB
+    saved while drawing the very mode lite is supposed to exclude.
+    """
+    modes = ["bars", "mirror", "disc", "album"]
+    if not is_lite(cfg):
+        modes.insert(2, "radial")
+    if not is_micro(cfg):
+        # "video" is a mode, not just a key: drawing it opens the ffmpeg
+        # pipeline. Leaving it in a micro build's cycle list meant micro still
+        # loaded ffmpeg the moment the user pressed F, which is the one cost
+        # the tier exists to remove.
+        modes.append("video")
+    return modes
+
+
+# ncs_video pulls in ffmpeg -- 25.5 MB, the largest single cost left in a lite
+# build. Imported on first use for the same reason as the sphere: a top-level
+# import made a build that never plays video pay for it anyway.
+_VIDEO_MOD = []
+
+
+class _Nothing:
+    """Falsy, callable, and self-returning. Stands in for any video attribute.
+
+    The real VideoSlot is read both ways -- `slot.message` (a value) and
+    `slot.is_active()` (a call) -- and its surface is wide and still growing.
+    One object answers both: falsy so `if slot.x` takes the "no video" branch,
+    callable so `slot.x()` does not raise, and returning itself so
+    `slot.x().y` does not raise either.
+
+    Returning None fails the call form; returning a lambda fails the value
+    form, because a lambda is truthy. Both were tried here first.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self):
+        return False
+
+    def __call__(self, *a, **k):
+        return self
+
+    def __getattr__(self, name):
+        return self
+
+    def __eq__(self, other):
+        return other is None or isinstance(other, _Nothing)
+
+    def __hash__(self):
+        return 0
+
+    def __repr__(self):
+        return "<no video>"
+
+
+_NOTHING = _Nothing()
+
+
+def _ncs_video():
+    """Import ncs_video on first use, then cache it."""
+    if not _VIDEO_MOD:
+        import ncs_video as _m
+        _VIDEO_MOD.append(_m)
+    return _VIDEO_MOD[0]
+
+
+def video_available():
+    """Is ffmpeg present? Safe to call in any build, loads nothing in micro.
+
+    The old code called ncs_video.have_ffmpeg() at three sites, which meant a
+    build with video compiled out still imported ffmpeg just to be told no.
+    """
+    if is_micro():
+        return False
+    try:
+        return bool(_ncs_video().have_ffmpeg())
+    except Exception:
+        return False
+
+
+_SPHERE_FN = []
+
+
+def _draw_ncs_sphere(*a, **k):
+    """First-call import of the NCS sphere renderer.
+
+    Kept out of module import so lite builds never load it at all.
+    """
+    if not _SPHERE_FN:
+        from ncs_sphere import draw_ncs_sphere
+        _SPHERE_FN.append(draw_ncs_sphere)
+    return _SPHERE_FN[0](*a, **k)
 
 
 # ---- rendering caches ---------------------------------------------------
@@ -542,7 +676,7 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
 
     if mode == "radial":
         # The real NCS ball: 3D point-cloud sphere with a flowing gold membrane
-        draw_ncs_sphere(screen, player, w, h, t)
+        _draw_ncs_sphere(screen, player, w, h, t)
     elif mode == "disc":
         # --- Rotating Vinyl Disc Visualizer ---
         disc_radius = int(min(w, h) * 0.28)
@@ -1040,11 +1174,11 @@ def draw_video_overlay(screen, font, w, h, text):
                        True, (110, 115, 130))
     screen.blit(hint, (w // 2 - hint.get_width() // 2, h // 2 + 104))
 
-    if not ncs_video.have_ffmpeg():
+    if not video_available():
         warn = font.render("ffmpeg not found on PATH - video cannot play",
                            True, (255, 120, 90))
         screen.blit(warn, (w // 2 - warn.get_width() // 2, h // 2 + 136))
-    elif not ncs_video.have_ytdlp():
+    elif not _ncs_video().have_ytdlp():
         warn = font.render("yt-dlp not found - web links will not resolve",
                            True, (255, 190, 90))
         screen.blit(warn, (w // 2 - warn.get_width() // 2, h // 2 + 136))
@@ -1233,7 +1367,11 @@ def main():
     player = Player()
     player.stream.start()
 
-    torrents = TorrentManager() if lt is not None else None
+    # Micro builds skip torrents: importing libtorrent costs 6.2 MB, and
+    # nothing else here needs it. The T key explains rather than failing
+    # with a NameError, same as the API panel above.
+    _micro = is_micro(cfg)
+    torrents = TorrentManager() if (lt is not None and not _micro) else None
 
     selected = 0
     # The media-key sync box is created here, next to the selection it
@@ -1243,10 +1381,16 @@ def main():
     # even scanned.
     nonlocal_selected = [selected]  # for media_key sync
     vis_mode_idx = 0
-    modes = ["bars", "mirror", "radial", "disc", "album", "video"]
+    modes = VIS_MODES(cfg)
     # The video layer. ffmpeg must exist or the key is refused with a reason
     # rather than silently doing nothing.
-    video_slot = ncs_video.VideoSlot()
+    # A micro build must not touch ncs_video at all -- VideoSlot() lives in
+    # the module that costs 25.5 MB. _Nothing answers everything it is asked.
+    class _NoVideoSlot:
+        def __getattr__(self, name):
+            return _NOTHING
+
+    video_slot = _NoVideoSlot() if is_micro(cfg) else _ncs_video().VideoSlot()
     video_overlay_open = False
     video_overlay_text = ""
     muted = False
@@ -1325,16 +1469,23 @@ def main():
     # machine -- Claude Code, OpenCode, a script, curl -- can control playback
     # without the app knowing or caring which one it is. Started here, after
     # push_notice exists, so a bind failure can actually be reported.
-    import control_api as capi_mod
-    api_token = capi_mod.load_or_make_token(
-        os.path.join(appconfig.CONFIG_DIR, "api_token"))
-    api = capi_mod.ControlAPI(
-        host=cfg.get("api_host") or "127.0.0.1",
-        port=int(cfg.get("api_port") or 8777),
-        token=api_token,
-        enabled=bool(cfg.get("api_enabled", True)),
-    )
-    if api.enabled and not api.start():
+    # Lite builds do not construct the API at all -- not a disabled one, not
+    # one that fails to bind. No module import, no socket, no token file
+    # written to disk, and nothing listening for a caller to discover.
+    api = None
+    if is_lite(cfg):
+        push_notice(("info", "lite build: control API is not compiled in"), 4.0)
+    else:
+        import control_api as capi_mod
+        api_token = capi_mod.load_or_make_token(
+            os.path.join(appconfig.CONFIG_DIR, "api_token"))
+        api = capi_mod.ControlAPI(
+            host=cfg.get("api_host") or "127.0.0.1",
+            port=int(cfg.get("api_port") or 8777),
+            token=api_token,
+            enabled=bool(cfg.get("api_enabled", True)),
+        )
+    if api is not None and api.enabled and not api.start():
         # Both on screen AND in the log. A bind failure used to be an 8-second
         # toast and nothing else: miss it and the app looks completely normal
         # while having no remote control at all, which is the hardest kind of
@@ -1714,18 +1865,25 @@ def main():
             # "open_hermes" is accepted as an alias: it is the name 1.0.x saved
             # to settings.json, and a keymap on disk should never be a dead
             # key just because the panel behind it got renamed.
-            api_open = not api_open
-            if api_open:
-                if api_panel is None:
-                    api_panel = ApiPanel(font, pygame.Rect(0, 0, w, h),
-                                         api.describe)
+            if api is None:
+                # Lite build: say so once rather than raising on api.describe,
+                # and leave the key doing nothing rather than crashing.
+                push_notice(("info", "no control API in this build"), 2.5)
+            else:
+                api_open = not api_open
+                if api_open:
+                    if api_panel is None:
+                        api_panel = ApiPanel(font, pygame.Rect(0, 0, w, h),
+                                             api.describe)
         elif act == "open_video":
             # V toggles the layer off; Shift+V (or V with nothing playing)
             # asks for an explicit path / .strm / URL.
-            if video_slot.is_active() and not shifted:
+            if _micro:
+                push_notice(("info", "no video in this build"), 2.5)
+            elif video_slot.is_active() and not shifted:
                 video_slot.clear(by_user=True)
                 push_notice(("info", "video off"))
-            elif ncs_video.have_ffmpeg():
+            elif video_available():
                 video_overlay_open = True
                 video_overlay_text = ""
                 pygame.key.start_text_input()
@@ -2211,7 +2369,8 @@ def main():
             # stalled playhead.
             "frame": frame_no,
         })
-        api.drain(API_HANDLERS)
+        if api is not None:
+            api.drain(API_HANDLERS)
 
         # Draw visualizer. The video slot follows the selected track so a
         # sidecar appears on its own; a pinned source ignores track changes.

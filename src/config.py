@@ -17,6 +17,8 @@ import copy
 import json
 import os
 
+from build_variant import BUILD_LITE
+
 # Home, not CWD: the frozen bundle's directory is read-only.
 # HASHPLAY_CONFIG_DIR overrides it so a test -- or someone who wants a
 # throwaway profile -- can point the whole app somewhere disposable instead of
@@ -85,6 +87,20 @@ DEFAULT_CONFIG = {
     "api_host": "127.0.0.1",
     "api_port": _env_port(),
     "setup_complete": False,
+    # "lite" strips the two things that cost the most and matter least to
+    # somebody who just wants to play music:
+    #
+    #   * the control API (control_api.py) -- an HTTP server on a socket, plus
+    #     the panel and its token file. Off means no listener at all.
+    #   * the NCS ball ("radial", src/ncs_sphere.py) -- the only visualizer
+    #     holding real memory: measured 16.6 MB peak against ~0 MB for the
+    #     other five, because it keeps cached kernel planes for its splat.
+    #
+    # Which build this is, from src/build_variant.py -- a constant, not an
+    # env var, because PyInstaller cannot see env lookups and an env-driven
+    # flag was silently lost in the frozen binary. This stays a config key so
+    # a settings.json can still flip it, but a lite BUILD has it pinned true.
+    "lite": BUILD_LITE,
 }
 
 

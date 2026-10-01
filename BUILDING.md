@@ -163,3 +163,22 @@ python3 tests/test_updater.py        # release parsing + checksum verification
 python3 tests/test_apply_pending.py   # the next-launch swap
 python3 tests/test_ci_config.py       # workflows, scripts, docs
 ```
+
+## Building the lite variant
+
+`scripts/build_macos_lite.sh` produces a second macOS bundle from this same
+tree with the control API and the NCS ball left out. There is no second
+codebase: it flips one constant, `BUILD_LITE` in `src/build_variant.py`,
+builds, and restores the file on exit (including on failure, via `trap`).
+
+**Do not make the variant an environment variable.** `HASHPLAY_LITE=1` was the
+original design and it does not survive a build. PyInstaller analyses imports,
+not the environment, so `os.environ.get("HASHPLAY_LITE")` in a frozen binary
+returned false and the "lite" build opened a listening socket and wrote a
+token file. Every source-level test passed, because the source was correct.
+Verify the artifact, not the source:
+
+    scripts/verify_lite_binary.sh
+
+That runs the finished bundle and checks that nothing is listening on the API
+port, that no `api_token` file appears, and that it stays alive.

@@ -87,6 +87,15 @@ ok("build.yml: windows on windows-latest, runs build_windows.sh, uploads prepare
 
 # And a tag has to actually publish a release, or the updater has nothing to
 # find. The old file claimed this in a comment and did not do it.
+# The lite binary is a second macOS asset from the same tree.
+_mac = next(j for j in jobs.values() if "macos" in (j.get("runs-on") or ""))
+_mc = [s.get("run", "") for s in _mac["steps"]]
+assert any("build_macos_lite.sh" in r for r in _mc), \
+    "macOS job does not build the lite bundle"
+assert any("HashPlay-lite-macos-arm64.app.zip" in r for r in _mc), \
+    "the lite bundle is built but never collected into upload/"
+print(" 6. build.yml: macOS job builds AND ships the lite bundle")
+
 assert "release" in jobs, "build.yml has no release job"
 _rel = jobs["release"]
 assert "contents" in str(_rel.get("permissions")), _rel.get("permissions")
