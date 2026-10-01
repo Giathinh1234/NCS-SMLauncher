@@ -8,6 +8,7 @@ is parsed here, not just grepped, and the scripts are checked for the
 executable bit GitHub needs to run them.
 """
 import os
+import re
 import stat
 import sys
 
@@ -94,7 +95,32 @@ assert any("build_macos_stripped.sh" in r for r in _mc), \
     "macOS job does not build the lite bundle"
 assert any("HashPlay-lite-macos-arm64.app.zip" in r for r in _mc), \
     "the lite bundle is built but never collected into upload/"
-print(" 6. build.yml: macOS job builds AND ships the lite bundle")
+print(" 6. build.yml: macOS job builds AND ships both stripped bundles")
+
+# The stripped-build script must not delete the FULL build's output. It used to
+# run `rm -rf build dist`, which is fine on its own but destroys dist/HashPlay
+# and dist/HashPlay.app when CI invokes it a second time for the other tier --
+# and macOS then failed at the collect step with "cp: dist/HashPlay: No such
+# file or directory". Found by CI run 36854895542, not by a test.
+_strip = open(os.path.join(ROOT, "scripts", "build_macos_stripped.sh"),
+              encoding="utf-8").read()
+# Compare COMMANDS, not the whole file: the comment above the rm quotes the old
+# bad line verbatim to explain why it is gone, so a plain substring search
+# matched the explanation and failed on correct code.
+_strip_code = "\n".join(
+    ln for ln in _strip.splitlines() if not ln.lstrip().startswith("#"))
+assert not re.search(r"rm\s+-rf\s+build\s+dist\b", _strip_code), (
+    "build_macos_stripped.sh deletes all of dist/, which wipes the full build "
+    "when it runs after build_macos_app.sh")
+assert "rm -rf build " in _strip_code and "dist/HashPlay-$PROFILE.app" in _strip_code, (
+    "it should clean only the bundle it is about to create")
+for _tier in ("lite", "micro"):
+    _yml = open(BUILD_YML, encoding="utf-8").read()
+    assert f"build_macos_stripped.sh {_tier}" in _yml, \
+        f"CI does not build the {_tier} tier"
+    assert f"HashPlay-{_tier}-macos-arm64.app.zip" in _yml, \
+        f"CI does not ship the {_tier} bundle"
+print(" 7. the stripped builds cannot delete the full build, and both ship")
 
 assert "release" in jobs, "build.yml has no release job"
 _rel = jobs["release"]

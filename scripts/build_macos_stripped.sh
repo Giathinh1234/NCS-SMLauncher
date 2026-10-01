@@ -25,7 +25,13 @@ PYI_BIN="python3 -m PyInstaller"
 
 echo "== HashPlay $VERSION ($PROFILE) =="
 
-rm -rf build dist
+# Clean only what this build makes. The first version of this ran
+# `rm -rf build dist`, which is fine standalone but DESTROYS the full build's
+# output when CI runs it a second time for the other tier: it deleted
+# dist/HashPlay and dist/HashPlay.app, and the collect step then failed with
+# "cp: dist/HashPlay: No such file or directory". It now removes only the
+# bundle it is about to create, plus the PyInstaller work dir.
+rm -rf build "dist/HashPlay-$PROFILE.app" "dist/HashPlay-$PROFILE-macos-arm64.app.zip"
 # The flag has to be set for the BUILD as well as the app: PyInstaller reads
 # the modules in to bundle them, and a module never imported at build time is
 # a module a frozen build cannot import at run time.
@@ -60,6 +66,15 @@ assert s2 != s, "BUILD_PROFILE assignment not found -- refusing to build a full 
 open(p, "w", encoding="utf-8").write(s2)
 PYEOF
 
+
+# PyInstaller writes dist/HashPlay, which the step below renames into the tier
+# bundle. That is what ate the full build's bare executable when CI ran the
+# tiers after build_macos_app.sh: the mv consumed it and nothing put it back.
+# Stash it first and restore afterwards, so all three artifacts coexist.
+STASH="dist/.full-build-keep"
+mkdir -p "$STASH"
+[ -e dist/HashPlay ] && mv dist/HashPlay "$STASH/HashPlay"
+[ -e dist/HashPlay.app ] && cp -R dist/HashPlay.app "$STASH/HashPlay.app" 2>/dev/null || true
 
 $PYI_BIN --clean --noconfirm HashPlay.spec >/dev/null 2>&1 \
   || $PYI_BIN --clean --noconfirm HashPlay.spec
@@ -99,6 +114,12 @@ INFOPLIST="$APP/Contents/Info.plist"
 } > "$INFOPLIST"
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# Put the full build back: this script must not consume it.
+if [ -e "$STASH/HashPlay" ]; then
+  mv "$STASH/HashPlay" dist/HashPlay
+fi
+rm -rf "$STASH"
 
 # Prove the flag survived into the binary. A lite build that reports itself as
 # full would be worse than useless -- it would look right and listen anyway.
