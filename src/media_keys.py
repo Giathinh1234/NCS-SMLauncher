@@ -57,16 +57,48 @@ class MediaKeyTap:
     # ---- internals -------------------------------------------------------
 
     def _callback(self, proxy, event_type, event, refcon):
+        # Quartz is only bound when the import at the top of this module
+        # succeeded. A tap can only exist if it did, so this is belt and
+        # braces -- but referencing an unbound Quartz here would be an
+        # UnboundLocalError, and an exception escaping this callback aborts
+        # the process. Never let anything propagate out of here.
+        if not HAVE_QUARTZ:
+            return event
+        try:
+            return self._dispatch(event_type, event)
+        except Exception:
+            # A media key is not worth crashing the player over. The tap
+            # swallows the event and the app carries on.
+            return event
+
+    def _dispatch(self, event_type, event):
         if event_type == Quartz.kCGEventTapDisabledByTimeout:
-            # macOS re-enables us after timeout; restart tap
-            Quartz.CGEventTapEnable(self.tap, True)
+            # macOS re-enables us after a timeout; restart the tap.
+            # Guard on self.tap: CGEventTapEnable() is a C function that
+            # dereferences the port without a NULL check, so calling it before
+            # start() succeeded segfaults the interpreter outright. Reached
+            # here whenever a timeout event arrives for a tap that was never
+            # established.
+            if getattr(self, "tap", None) is not None:
+                Quartz.CGEventTapEnable(self.tap, True)
             return None
-        # See start(): this constant is absent from this pyobjc build. Reading
-        # it by name inside the callback raised AttributeError on every single
-        # event, which the tap would have swallowed.
-        if event_type not in (14, getattr(Quartz, "kCGEventOtherKeyDown", 14),
-                              Quartz.kCGEventKeyDown,
-                              Quartz.kCGEventTapDownOnMediaKey):
+        # These two constants are ABSENT from some pyobjc builds (verified on
+        # this machine: both hasattr() checks are False). Naming them directly
+        # raised AttributeError on every single event, and an exception
+        # escaping a CGEventTap callback is converted by pyobjc into an
+        # uncaught NSException -- which aborts the whole app. The app died a
+        # few seconds after opening, with SIGABRT and this frame on top:
+        #     PyObjCErr_ToObjCWithGILState
+        #     m_CGPatternDrawPatternCallback
+        #     processEventTapData
+        # The comment above used to claim this was handled. It was not: the
+        # getattr() covered kCGEventOtherKeyDown but the very next element was
+        # a bare Quartz.kCGEventTapDownOnMediaKey, and the tuple is evaluated
+        # before `in` ever runs.
+        other_key_down = getattr(Quartz, "kCGEventOtherKeyDown", 14)
+        media_key_down = getattr(Quartz, "kCGEventTapDownOnMediaKey", 14)
+        if event_type not in (14, other_key_down, media_key_down,
+                              Quartz.kCGEventKeyDown):
             return event
 
         keycode = Quartz.CGEventGetIntegerValueField(event,
