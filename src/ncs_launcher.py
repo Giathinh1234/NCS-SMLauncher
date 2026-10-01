@@ -51,7 +51,6 @@ import numpy as np
 
 from media_keys import MediaKeyTap, open_accessibility_settings
 import config as appconfig
-from build_variant import BUILD_LITE, BUILD_PROFILE
 import actions as appactions
 import migrations as appmigrations
 
@@ -70,10 +69,18 @@ try:
 except ImportError:
     sys.exit("Missing dependency 'pygame'. Run: pip install pygame")
 
-try:
-    import libtorrent as lt
-except ImportError:
-    lt = None   # torrent features disabled, everything else still works
+from build_variant import BUILD_LITE, BUILD_PROFILE
+
+# libtorrent costs 6.2 MB just to import, so a micro build does not import it
+# at all rather than importing it and choosing not to use it. That check has to
+# come after BUILD_PROFILE is known, which is why it is not a bare try/except
+# at the top of the file any more.
+lt = None
+if BUILD_PROFILE != "micro":
+    try:
+        import libtorrent as lt
+    except ImportError:
+        lt = None   # torrent features disabled, everything else still works
 
 
 AUDIO_EXTENSIONS = ("*.mp3", "*.wav", "*.ogg", "*.flac", "*.m4a")
@@ -2073,6 +2080,9 @@ def main():
                         overlay_open = False
                         overlay_text = ""
                     elif event.key == pygame.K_RETURN and overlay_text.strip():
+                        if torrents is None:
+                            push_notice(("info", "no torrents in this build"), 3.0)
+                            continue
                         ok = torrents.start_download(overlay_text.strip()) \
                             if torrents else False
                         if not torrents:
@@ -2104,7 +2114,7 @@ def main():
                     if overlay_open:
                         overlay_open = False
                         overlay_text = ""
-                    elif (torrents and not torrents_dismissed
+                    elif (torrents is not None and not torrents_dismissed
                           and _torrent_panel_up(
                               overlay_open, torrents.status_lines())):
                         # Only consume ESC if the panel is actually on screen.
@@ -2343,8 +2353,9 @@ def main():
         # sees this frame, then drain, so the HTTP thread's reply is sent the
         # same frame. Both must be here, not in the HTTP thread, because SDL
         # is not thread-safe.
-        api.publish({
-            "playing": bool(player.track_path) and not player.paused,
+        if api is not None:
+            api.publish({
+                "playing": bool(player.track_path) and not player.paused,
             "paused": bool(player.paused),
             "track": _cur().get("title"),
             "artist": _cur().get("artist"),
@@ -2387,7 +2398,7 @@ def main():
         # input prompt still shows (it is modal), but a finished download no
         # longer parks a panel over the app waiting to eat an ESC.
         if torrents and not (torrents_dismissed and not overlay_open):
-            statuses = torrents.status_lines()
+            statuses = torrents.status_lines() if torrents is not None else []
             if notice or overlay_open:
                 draw_torrent_overlay(screen, font, w, h, overlay_text, statuses,
                                      notice)
@@ -2449,7 +2460,10 @@ def main():
     # Cleanup. Reap the ffmpeg pipe before pygame goes away, or a detached
     # ffmpeg survives the app and keeps decoding into a closed pipe.
     video_slot.clear(by_user=False)
-    if torrents and torrents.session:
+    # `torrents` is None in a micro build (and when libtorrent is missing),
+    # so this has to be an is-None test, not a truthiness test -- a manager
+    # that exists but has no session yet is a different case from no manager.
+    if torrents is not None and torrents.session:
         torrents.session.pause()
     pygame.quit()
 

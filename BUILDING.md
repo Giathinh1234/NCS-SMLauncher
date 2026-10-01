@@ -166,7 +166,7 @@ python3 tests/test_ci_config.py       # workflows, scripts, docs
 
 ## Building the lite variant
 
-`scripts/build_macos_lite.sh` produces a second macOS bundle from this same
+`scripts/build_macos_stripped.sh` produces a second macOS bundle from this same
 tree with the control API and the NCS ball left out. There is no second
 codebase: it flips one constant, `BUILD_LITE` in `src/build_variant.py`,
 builds, and restores the file on exit (including on failure, via `trap`).

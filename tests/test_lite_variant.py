@@ -36,7 +36,7 @@ variant = read("src/build_variant.py")
 config = read("src/config.py")
 launcher = read("src/ncs_launcher.py")
 spec = read("HashPlay.spec")
-script = read("scripts/build_macos_lite.sh")
+script = read("scripts/build_macos_stripped.sh")
 
 print("LITE VARIANT IS A CONSTANT, NOT AN ENV VAR")
 
@@ -63,16 +63,32 @@ check("BUILD_LITE = True" not in config,
 print("\n  the launcher honours the pinned value")
 check("from build_variant import BUILD_LITE" in launcher,
       "ncs_launcher.py imports BUILD_LITE")
-check("BUILD_LITE or (cfg or {}).get(\"lite\")" in launcher,
-      "one is_lite() helper decides it, and it honours BUILD_LITE first so a "
-      "lite build cannot be un-lited by a settings file")
-check(launcher.count("is_lite(") >= 3,
-      "both the mode list and the API gate ask the same helper",
-      f"only {launcher.count('is_lite(')} call sites")
+check("def build_profile(" in launcher,
+      "one build_profile() helper decides the tier for every gate")
+check("BUILD_PROFILE or" in launcher or 'pinned = BUILD_PROFILE' in launcher,
+      "it honours BUILD_PROFILE first, so a micro build cannot be talked up to "
+      "full by a settings file")
+check(launcher.count("build_profile(") >= 2,
+      "the mode list, the API gate and the video gate ask the same helper",
+      f"only {launcher.count('build_profile(')} call sites")
+check("def is_micro(" in launcher,
+      "a separate is_micro() exists for the things only micro drops")
+
+check("HASHPLAY_PROFILE" in script,
+      "the build script also exports HASHPLAY_PROFILE, which the .spec reads",
+      "the spec cannot be told anything on the command line")
+check("HASHPLAY_PROFILE" in spec,
+      "HashPlay.spec uses HASHPLAY_PROFILE to decide what to bundle")
+check("excludes=" in spec and "libtorrent" in spec,
+      "the spec EXCLUDES libtorrent/ncs_video/ncs_sphere for micro -- "
+      "naming them as hiddenimports is not enough, PyInstaller's own analysis "
+      "still collects them")
 
 print("\n  the build script writes the constant BEFORE building")
-check("BUILD_LITE = True" in script,
-      "build_macos_lite.sh flips the constant")
+check("BUILD_LITE" not in script or 'BUILD_PROFILE' in script,
+      "the script sets the tier (BUILD_PROFILE), not the old single flag")
+check("BUILD_PROFILE" in script,
+      "build_macos_stripped.sh sets the profile constant")
 check("trap restore EXIT" in script,
       "the script restores the full variant afterwards, even on failure")
 # Ordering matters: the flip must precede the PyInstaller call, or the binary
@@ -81,7 +97,9 @@ check("trap restore EXIT" in script,
 # version of this test searched for "PyInstaller" and found it in a comment
 # above the flip, so it reported the fix was in the wrong order when it was
 # in the right one -- a test that fails on correct code teaches you to ignore it.
-flip = script.find("BUILD_LITE = True")
+# The flip is done by a python one-liner that rewrites BUILD_PROFILE, so the
+# search target is the regex it applies, not a literal assignment.
+flip = script.find("BUILD_PROFILE")
 pyi = script.find("$PYI_BIN")
 check(0 < flip < pyi,
       "the flip happens BEFORE PyInstaller runs (order is the whole fix)",

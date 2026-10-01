@@ -44,7 +44,7 @@ jobs:
         # by src/config.py at import time, so the lite binary genuinely never
         # constructs the API and never imports ncs_sphere.
         run: |
-          ./scripts/build_macos_lite.sh
+          ./scripts/build_macos_stripped.sh
           cd dist && zip -qry HashPlay-lite-macos-arm64.app.zip HashPlay-lite.app
       - name: Collect under the name the updater looks for
         run: |

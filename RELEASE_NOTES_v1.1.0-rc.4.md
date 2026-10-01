@@ -259,45 +259,54 @@ key events and watches the process actually exit. Run it yourself:
 Verified on the shipped `.app` bundle as well: one press arms, the second
 quits, and Q still quits immediately.
 
-## A lite build, if you want less of it
+## Low-fuel builds, if you want less of it
 
-`HashPlay-lite-macos-arm64` is the same app from the same source tree with two
-things left out:
+Two stripped builds, same codebase, no second copy to drift out of sync:
 
-- **the control API** — no HTTP server, no socket, no token file. It is not
-  disabled, it is not constructed at all.
-- **the NCS ball** — the only visualizer holding real memory. The other five
-  measure ~0 MB; the ball holds 16.6 MB of cached splat kernels.
+| build | what it drops | peak memory | download |
+|---|---|---|---|
+| full | nothing | 121 MB | 30 MB |
+| **lite** | control API, NCS ball | 106 MB | 30 MB |
+| **micro** | + video (ffmpeg), torrents | 98 MB | **25 MB** |
 
-Measured at 1280x748, both builds drawing every mode they offer:
+Measured at 1280x748 with each build drawing every mode it offers.
 
-| build | peak memory |
-|---|---|
-| full | 130.8 MB |
-| lite | 105.7 MB |
-| **saved** | **25.1 MB (19%)** |
+`micro` is the low-fuel one if you only want music. It keeps playback, your
+library, the first-run wizard, settings and keymaps. You lose the control API
+(bots, scripts, `hashplay-ctl`), the NCS ball, video, and torrents.
 
-Both figures come from the same run of `tests/test_lite_memory.py`, which asks
-the launcher for its own mode list rather than keeping a copy — an earlier
-version kept a copy, the two drifted, and the test reported a 2 MB saving
-between two builds that were byte-for-byte identical.
+**Both stripped builds were found broken and fixed, and the reason is worth
+knowing if you build this yourself.**
 
-Same codebase, one constant (`BUILD_LITE` in `src/build_variant.py`) that the
-build script flips — there is no second copy of the app to drift out of sync.
-`ncs_sphere` is now imported on first draw rather than at startup, which is
-what makes the saving real: a build that merely hid the mode from the list
-would still have loaded the module and allocated the memory.
+The variant was originally an environment variable, `HASHPLAY_LITE=1`. PyInstaller
+analyses *imports*, not the environment, so the flag never reached the binary:
+the first "lite" build opened a listening socket on 8777 and wrote an
+`api_token` file while advertising itself as lite. Every source-level test
+passed, because the source was correct. Only running the finished bundle and
+checking for a socket could have caught it.
 
-Worth knowing if you build this yourself: the variant started out as an
-environment variable, and the first lite binary that way was **not lite** — it
-opened a listening socket and wrote a token file while advertising itself as
-lite. PyInstaller reads imports, not the environment, so the flag never made
-it into the binary. `scripts/verify_lite_binary.sh` now runs the finished
-bundle and checks the socket, the token file, and that it stays alive.
+Then micro crashed on startup, in the same family of bug — a per-frame
+`api.publish(...)` and a shutdown `torrents.session.pause()` that assumed the
+API and the torrent manager always exist. Making them optional means every
+call site has to know, and four did not.
 
-You lose remote control (bots, scripts, `hashplay-ctl`) and the ball. You keep
-playback, the library, the video layer, settings, keymaps, and the first-run
-wizard.
+And the biggest one: `ncs_sphere` and `ncs_video` are *lazy* imports in the
+source, so the `.spec` has to name them explicitly or a frozen build cannot
+import them at all. Naming them unconditionally meant a micro build shipped,
+extracted and **loaded** both — confirmed with `lsof` against a running micro
+build, which had libtorrent's dylibs mapped in. A micro build has to exclude
+them in the spec too, and PyInstaller's own analysis keeps finding libtorrent
+regardless, because the `if BUILD_PROFILE != "micro":` around the import is not
+something a static analyser evaluates.
+
+So: the constant in `src/build_variant.py` governs *runtime behaviour*, and
+`HASHPLAY_PROFILE` governs *what gets collected into the binary*. Both have to
+agree, and both are now checked. `scripts/verify_lite_binary.sh` runs the
+finished bundle and verifies the socket, the token file, the loaded modules
+and that it stays alive —
+
+    scripts/build_macos_stripped.sh micro
+    scripts/verify_lite_binary.sh micro
 
 ## Install
 

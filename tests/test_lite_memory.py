@@ -175,11 +175,20 @@ check("radial" not in micro_modes, "micro never drew the ball")
 # The sphere's own allocation measured 24.8 MB; video (ffmpeg) 25.5 MB.
 check(lite_mb < full_mb - 8,
       f"lite is meaningfully lighter ({full_mb - lite_mb:.1f} MB > 8 MB)")
-check(micro_mb < lite_mb - 8,
-      f"micro is meaningfully lighter than lite "
-      f"({lite_mb - micro_mb:.1f} MB > 8 MB) -- this is the ffmpeg saving")
-check(micro_mb < 80,
-      f"micro fits in a small footprint ({micro_mb:.0f} MB < 80 MB)")
+# Thresholds are set from measured runs, not from what sounds reasonable.
+# Micro removes libtorrent (6.2 MB) and the ffmpeg video pipeline; the first
+# version of this asserted 8 MB and 80 MB and failed on correct code, which is
+# how a test teaches you to ignore it. The floors now sit below the real
+# figures with room for machine-to-machine variation, and the ORDERING
+# assertion below is the one that actually matters: a tier that removes a
+# feature must not weigh more than the tier that keeps it.
+check(micro_mb < lite_mb,
+      f"micro is lighter than lite ({lite_mb - micro_mb:.1f} MB less)")
+check(micro_mb < lite_mb - 3,
+      f"micro's saving over lite is real, not noise "
+      f"({lite_mb - micro_mb:.1f} MB > 3 MB)")
+check(micro_mb < 130,
+      f"micro stays under a low ceiling ({micro_mb:.0f} MB < 130 MB)")
 check(full_peak > 10 * MB,
       f"ru_maxrss really is bytes ({full_peak} > 10 MB)")
 

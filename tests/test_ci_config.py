@@ -90,7 +90,7 @@ ok("build.yml: windows on windows-latest, runs build_windows.sh, uploads prepare
 # The lite binary is a second macOS asset from the same tree.
 _mac = next(j for j in jobs.values() if "macos" in (j.get("runs-on") or ""))
 _mc = [s.get("run", "") for s in _mac["steps"]]
-assert any("build_macos_lite.sh" in r for r in _mc), \
+assert any("build_macos_stripped.sh" in r for r in _mc), \
     "macOS job does not build the lite bundle"
 assert any("HashPlay-lite-macos-arm64.app.zip" in r for r in _mc), \
     "the lite bundle is built but never collected into upload/"

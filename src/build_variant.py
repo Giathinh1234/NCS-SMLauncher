@@ -11,7 +11,7 @@ in translation.
 So the variant is a CONSTANT in a module, written before the build. That is
 something PyInstaller can see, and something a test can read.
 
-The full build leaves BUILD_LITE = False. scripts/build_macos_lite.sh
+The full build leaves BUILD_LITE = False. scripts/build_macos_stripped.sh
 overwrites this file first, then builds.
 """
 
