@@ -38,23 +38,27 @@ jobs:
         run: ./build_macos_app.sh
       - name: Zip the bundle
         run: cd dist && zip -qry HashPlay.app.zip HashPlay.app
-      - name: Build the lite bundle
-        # Same tree with HASHPLAY_LITE=1: no control API, no NCS ball. A
-        # second macOS asset rather than a second codebase -- the flag is read
-        # by src/config.py at import time, so the lite binary genuinely never
-        # constructs the API and never imports ncs_sphere.
+      - name: Build the stripped bundles
+        # Two low-fuel builds from this same tree -- "lite" (no control API, no
+        # NCS ball) and "micro" (also no video/ffmpeg and no torrents). A
+        # second asset, never a second codebase: the tier is a constant in
+        # src/build_variant.py plus HASHPLAY_PROFILE, which the .spec reads to
+        # decide what to bundle at all.
         run: |
-          ./scripts/build_macos_stripped.sh
+          ./scripts/build_macos_stripped.sh lite
           cd dist && zip -qry HashPlay-lite-macos-arm64.app.zip HashPlay-lite.app
+          cd .. && ./scripts/build_macos_stripped.sh micro
+          cd dist && zip -qry HashPlay-micro-macos-arm64.app.zip HashPlay-micro.app
       - name: Collect under the name the updater looks for
         run: |
           mkdir -p upload
           cp dist/HashPlay upload/HashPlay-macos-arm64
           cp dist/HashPlay.app.zip upload/ || true
-          # The lite build ships alongside the full one. Its own .app.zip, NOT
-          # the bare executable, so the two can never be confused for
-          # each other in the asset list.
+          # The stripped builds ship alongside the full one. Their own
+          # .app.zip files, NOT the bare executable, so they can never be
+          # confused for each other in the asset list.
           cp dist/HashPlay-lite-macos-arm64.app.zip upload/ || true
+          cp dist/HashPlay-micro-macos-arm64.app.zip upload/ || true
       - uses: actions/upload-artifact@v4
         with:
           name: HashPlay-macos-arm64

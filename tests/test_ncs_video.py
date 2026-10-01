@@ -250,8 +250,18 @@ with nv.build_visual(long_clip, box) as vis:
         f"{slow} of {calls} reads took over 30 ms; that is a real stall"
 print("15) a stale frame is reused, so the visual keeps updating smoothly")
 with nv.build_visual(long_clip, box) as vis:
-    first = vis.next_surface(box)
-    assert first is not None
+    # The first read races the pipe's startup: ffmpeg has to launch, probe and
+    # emit its first frame, and next_surface() is written to return None rather
+    # than block, so an early call legitimately gets nothing. This asserted the
+    # very first read succeeded, which is a race -- it went red whenever the
+    # machine was busy. Bounded retry; still fails if no frame ever arrives.
+    deadline = time.time() + 10.0
+    first = None
+    while first is None and time.time() < deadline:
+        first = vis.next_surface(box)
+        if first is None:
+            time.sleep(0.01)
+    assert first is not None, "no frame after 10s -- the pipe never started" 
     stale = vis.next_surface(box)
     assert stale is not None, "must reuse the last surface, not return None"
     print("   ok")
