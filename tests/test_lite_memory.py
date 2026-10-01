@@ -127,6 +127,12 @@ for i in range({frames}):
 import resource
 print("PEAK_KB", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 print("MODES", ",".join(modes))
+# Always print a token after LOADED: a tier that loads none of them (micro)
+# would otherwise emit a bare "LOADED" and the parent would split on a missing
+# field. This is what micro does, so the empty case is the common one.
+_loaded = sorted(m for m in ("libtorrent", "ncs_video", "ncs_sphere",
+                             "control_api") if m in sys.modules)
+print("LOADED", ",".join(_loaded) if _loaded else "none")
 """
     # rss() helper
     script = script.replace("import os, sys, gc",
@@ -136,7 +142,7 @@ print("MODES", ",".join(modes))
                             "    return resource.getrusage("
                             "resource.RUSAGE_SELF).ru_maxrss")
     samples = []
-    modes = None
+    modes = loaded = None
     for _ in range(runs):
         out = subprocess.run([sys.executable, "-c", script], env=env,
                              capture_output=True, text=True, timeout=600)
@@ -146,22 +152,29 @@ print("MODES", ",".join(modes))
                 peak = int(line.split()[1])
             elif line.startswith("MODES"):
                 modes = line.split(None, 1)[1]
+            elif line.startswith("LOADED"):
+                rest = line.split(None, 1)
+                val = rest[1].strip() if len(rest) > 1 else ""
+                loaded = "" if val == "none" else val
         if peak is None:
             raise SystemExit(f"no measurement for {lite}\n"
                              f"STDOUT:{out.stdout[-800:]}\n"
                              f"STDERR:{out.stderr[-1500:]}")
         samples.append(peak)
-    return min(samples), modes
+    return min(samples), modes, loaded
 
 
 print("MEMORY BY TIER -- 1280x748, 90 frames, silent (no audio device)\n")
 
-full_peak, full_modes = measure("full")
+full_peak, full_modes, full_mods = measure("full")
 print(f"  full : {full_peak / MB:7.1f} MB   modes: {full_modes}")
-lite_peak, lite_modes = measure("lite")
+print(f"          loaded: {full_mods or '(none of the four)'}")
+lite_peak, lite_modes, lite_mods = measure("lite")
 print(f"  lite : {lite_peak / MB:7.1f} MB   modes: {lite_modes}")
-micro_peak, micro_modes = measure("micro")
+print(f"          loaded: {lite_mods or '(none of the four)'}")
+micro_peak, micro_modes, micro_mods = measure("micro")
 print(f"  micro: {micro_peak / MB:7.1f} MB   modes: {micro_modes}")
+print(f"          loaded: {micro_mods or '(none of the four)'}")
 
 full_mb, lite_mb, micro_mb = full_peak / MB, lite_peak / MB, micro_peak / MB
 print(f"  lite saves {full_mb - lite_mb:6.1f} MB "
@@ -182,20 +195,37 @@ check(lite_mb < full_mb - 8,
 # figures with room for machine-to-machine variation, and the ORDERING
 # assertion below is the one that actually matters: a tier that removes a
 # feature must not weigh more than the tier that keeps it.
-check(micro_mb < lite_mb,
-      f"micro is lighter than lite ({lite_mb - micro_mb:.1f} MB less)")
-# Deliberately only ordering, not a size threshold for micro-vs-lite. This test
-# runs from SOURCE, where libtorrent and ncs_video are both installed and
-# importable, so it cannot observe micro's largest saving: not bundling them.
-# Measured from source the gap is ~2 MB, which is why the first version of
-# this assertion ("> 3 MB") failed on correct code.
+# NOT asserted here: that micro uses less RSS than lite.
 #
-# The real micro-vs-lite difference is in the artifact, and it is measured
-# there: bundle size (30 MB vs 25 MB) and the loaded-module check in
-# scripts/verify_lite_binary.sh. Both must agree for the pair to be worth
-# having; this test only has to prove the ordering is right.
+# Measured from source the gap is only a few MB, and run-to-run RSS noise on a
+# loaded machine is larger than that -- it came out at -0.1 MB, i.e. backwards,
+# with both builds provably correct. A threshold inside the noise band is a
+# coin flip, and a test that is a coin flip is worse than no test.
+#
+# What micro actually saves is not loading libtorrent and not bundling ffmpeg,
+# and the first half of that IS checkable here, deterministically: see the
+# module check below. The bundling half is an artifact property, measured in
+# scripts/verify_lite_binary.sh (bundle 30 MB vs 25 MB, and the modules are
+# absent from the binary entirely).
 check(micro_mb < 130,
       f"micro stays under a low ceiling ({micro_mb:.0f} MB < 130 MB)")
+
+# The deterministic half of micro's advantage, and the reason the RSS ordering
+# above is not asserted: what each tier actually loads. Not noisy, not a
+# coin flip, and it is the thing that costs 6.2 MB (libtorrent) plus the
+# ffmpeg pipeline.
+print("\n  which heavy modules each tier loads")
+check("libtorrent" in full_mods,
+      f"full loads libtorrent, as it must ({full_mods})")
+check("ncs_sphere" in full_mods,
+      f"full loads ncs_sphere ({full_mods})")
+check("ncs_sphere" not in lite_mods and "ncs_video" not in lite_mods,
+      f"lite loads neither ncs_sphere nor ncs_video ({lite_mods})")
+check("libtorrent" not in micro_mods,
+      f"micro does not load libtorrent at all ({micro_mods})")
+check("control_api" not in full_mods,
+      f"control_api is not imported just by drawing ({full_mods}) -- "
+      "it is imported only when the API is actually constructed")
 check(full_peak > 10 * MB,
       f"ru_maxrss really is bytes ({full_peak} > 10 MB)")
 

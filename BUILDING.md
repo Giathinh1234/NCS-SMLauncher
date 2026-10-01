@@ -164,21 +164,45 @@ python3 tests/test_apply_pending.py   # the next-launch swap
 python3 tests/test_ci_config.py       # workflows, scripts, docs
 ```
 
-## Building the lite variant
+## Building the low-fuel variants
 
-`scripts/build_macos_stripped.sh` produces a second macOS bundle from this same
-tree with the control API and the NCS ball left out. There is no second
-codebase: it flips one constant, `BUILD_LITE` in `src/build_variant.py`,
-builds, and restores the file on exit (including on failure, via `trap`).
+    scripts/build_macos_stripped.sh lite    # no control API, no NCS ball
+    scripts/build_macos_stripped.sh micro   # also no video, no torrents
+    scripts/verify_lite_binary.sh micro     # checks the FINISHED bundle
 
-**Do not make the variant an environment variable.** `HASHPLAY_LITE=1` was the
+Two stripped builds from this same tree. There is no second codebase: the tier
+is a constant in `src/build_variant.py` that the script flips and then restores
+on exit, including on failure, via `trap`.
+
+**Do not make the tier an environment variable.** `HASHPLAY_LITE=1` was the
 original design and it does not survive a build. PyInstaller analyses imports,
 not the environment, so `os.environ.get("HASHPLAY_LITE")` in a frozen binary
-returned false and the "lite" build opened a listening socket and wrote a
-token file. Every source-level test passed, because the source was correct.
-Verify the artifact, not the source:
+returned false and the "lite" build opened a listening socket and wrote a token
+file. Every source-level test passed, because the source was correct.
 
-    scripts/verify_lite_binary.sh
+**There are two signals and they must agree.** `BUILD_PROFILE` in
+`build_variant.py` governs runtime behaviour. `HASHPLAY_PROFILE`, which the
+build script exports, is read by `HashPlay.spec` and governs what gets
+collected into the binary -- a `.spec` is executed by PyInstaller and cannot be
+told anything on the command line. `ncs_sphere` and `ncs_video` are lazy
+imports, so the spec has to name them as hiddenimports or a frozen build cannot
+import them at all; for micro it must instead **exclude** them, and PyInstaller
+still collects `libtorrent` regardless because it does not evaluate
+`if BUILD_PROFILE != "micro":` around an import.
 
-That runs the finished bundle and checks that nothing is listening on the API
-port, that no `api_token` file appears, and that it stays alive.
+Measured, 1280x748, each build drawing every mode it offers:
+
+| build  | peak memory | bundle |
+|--------|-------------|--------|
+| full   | 121 MB      | 30 MB  |
+| lite   | 106 MB      | 30 MB  |
+| micro  | 98 MB       | 25 MB  |
+
+**Verify the artifact, never just the source.** `scripts/verify_lite_binary.sh`
+runs the finished bundle and checks that nothing is listening on the API port,
+that no `api_token` file appears, that `libtorrent`/`ncs_video`/`ncs_sphere`
+are not loaded, and that it is still alive. It launches the binary directly
+rather than with `open -a`, because `open` hands the app to launchd and
+silently drops the environment -- which had made the token-file check pass
+while inspecting a directory the app would never have written to.
+
