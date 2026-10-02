@@ -13,7 +13,9 @@ is the build you can try if you want to help check it.
   `AttributeError` on *every* event and pyobjc turned that into an uncaught
   `NSException`; and the timeout handler calling `CGEventTapEnable(None, ...)`,
   which segfaults. If you could not see the app, this is why.
-- **A lite build** on macOS: no control API, no NCS ball, 19 MB less memory.
+- **A lite build** on macOS: no control API, and the NCS ball redrawn from a
+  third of its points so it costs half the frame time. Every visualizer full
+  has, 13 MB less memory.
   Details and the measured numbers are in the lite section below.
 - ESC fix and the Windows/Linux builds carried over from rc.3 unchanged.
 
@@ -266,14 +268,18 @@ Two stripped builds, same codebase, no second copy to drift out of sync:
 | build | what it drops | peak memory | download |
 |---|---|---|---|
 | full | nothing | 121 MB | 30 MB |
-| **lite** | control API, NCS ball | 106 MB | 30 MB |
+| **lite** | control API; ball at 1/3 density | 116 MB | 30 MB |
 | **micro** | + video (ffmpeg), torrents | 98 MB | **25 MB** |
 
 Measured at 1280x748 with each build drawing every mode it offers.
 
 `micro` is the low-fuel one if you only want music. It keeps playback, your
 library, the first-run wizard, settings and keymaps. You lose the control API
-(bots, scripts, `hashplay-ctl`), the NCS ball, video, and torrents.
+(bots, scripts, `hashplay-ctl`), video, and torrents.
+
+Micro also drops the NCS ball entirely, which is why its bundle is 5 MB
+smaller: lite keeps the ball and draws it from a smaller point cloud, while
+micro leaves the renderer out of the bundle altogether.
 
 **Both stripped builds were found broken and fixed, and the reason is worth
 knowing if you build this yourself.**
