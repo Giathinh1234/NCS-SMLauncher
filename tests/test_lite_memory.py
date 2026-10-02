@@ -183,7 +183,8 @@ print(f"  micro saves {full_mb - micro_mb:6.1f} MB "
       f"({100.0 * (full_mb - micro_mb) / full_mb:.1f}%)\n")
 
 check("radial" in full_modes, "full build drew the NCS ball")
-check("radial" not in lite_modes, "lite never drew the ball")
+check("radial" in lite_modes,
+      "lite DREW the ball -- it is the same feature at lower density")
 check("radial" not in micro_modes, "micro never drew the ball")
 # The sphere's own allocation measured 24.8 MB; video (ffmpeg) 25.5 MB.
 check(lite_mb < full_mb - 8,
@@ -219,8 +220,10 @@ check("libtorrent" in full_mods,
       f"full loads libtorrent, as it must ({full_mods})")
 check("ncs_sphere" in full_mods,
       f"full loads ncs_sphere ({full_mods})")
-check("ncs_sphere" not in lite_mods and "ncs_video" not in lite_mods,
-      f"lite loads neither ncs_sphere nor ncs_video ({lite_mods})")
+check("ncs_video" not in lite_mods,
+      f"lite does not load ncs_video (ffmpeg) unless video plays ({lite_mods})")
+check("ncs_sphere" in lite_mods,
+      f"lite DOES load ncs_sphere -- it draws the ball, more cheaply ({lite_mods})")
 check("libtorrent" not in micro_mods,
       f"micro does not load libtorrent at all ({micro_mods})")
 check("control_api" not in full_mods,

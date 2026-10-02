@@ -403,9 +403,14 @@ def VIS_MODES(cfg=None):
     saved while drawing the very mode lite is supposed to exclude.
     """
     modes = ["bars", "mirror", "disc", "album"]
-    if not is_lite(cfg):
-        modes.insert(2, "radial")
+    # "radial" (the NCS ball) is in EVERY build now except micro. Lite used to
+    # drop it to save RAM, but that removed the thing the app is for, so
+    # instead ncs_sphere draws the same sphere from a much smaller point cloud
+    # in a lite build. See _density() in ncs_sphere.py. Micro still drops it:
+    # that tier is bars/mirror/disc/album only, and excluding ncs_sphere from its
+    # bundle is a real saving rather than a density change.
     if not is_micro(cfg):
+        modes.insert(2, "radial")
         # "video" is a mode, not just a key: drawing it opens the ffmpeg
         # pipeline. Leaving it in a micro build's cycle list meant micro still
         # loaded ffmpeg the moment the user pressed F, which is the one cost

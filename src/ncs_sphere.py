@@ -91,6 +91,32 @@ SPHERE_POINTS_MAX = 240000
 # at ppp 2.0 the ball carries MORE lit pixels than the old full-resolution
 # render (373,918 vs 251,928) with no visible row striping. Native resolution
 # at ppp 7.0 is also in budget (14.7 ms) but reads sparse and thin.
+# --- per-build cost knobs -------------------------------------------------
+# The ball stays in every build, including lite. What lite changes is how many
+# dots it is made of and the internal resolution it is drawn at, which is where
+# the frame cost actually is. At 700x440 the cloud is ~240k points and each one
+# is splatted into a (h, w, 3) float accumulator, so cost is very close to
+# linear in point count.
+#
+#   full  1.00  240k points at 0.50 scale
+#   lite  0.34  ~28k points at 0.34 scale
+#
+# 0.34 is not arbitrary: the accumulator is rw*rh*3 floats, and 0.34^2 is 8.7x
+# less of it, so the draw path falls to roughly a ninth while the ball still
+# reads as the same sphere. The brightness compensation further down already
+# handles a sparser cloud -- it divides by the shortfall so fewer, wider-looking
+# points do not come out dim -- so this does not need a colour change.
+def _density():
+    """(point scale, render scale) for the build this binary was made as."""
+    try:
+        from build_variant import BUILD_PROFILE
+    except Exception:
+        return 1.0, SPHERE_RENDER_SCALE
+    if BUILD_PROFILE == "lite":
+        return 0.34, 0.34
+    return 1.0, SPHERE_RENDER_SCALE
+
+
 SPHERE_RENDER_SCALE = 0.5
 # a cos(lat)-compensated nu x nv grid yields exactly 0.741 * nu * nv points
 _COSLAT_POINTS_FACTOR = 0.741
@@ -190,6 +216,7 @@ def _grid_for(w, h):
     """
     ball_px = math.pi * (min(w, h) * _R_BASE) ** 2
     want = min(ball_px / SPHERE_PPP_TARGET, SPHERE_POINTS_MAX)
+    want *= _density()[0]
     scale = math.sqrt(want / (_COSLAT_POINTS_FACTOR * SPHERE_NU * SPHERE_NV))
     nu = max(160, int(SPHERE_NU * scale))
     nv = max(100, int(SPHERE_NV * scale))
@@ -365,7 +392,7 @@ def draw_ncs_sphere(screen, player, w, h, t):
     # The accumulator is the dominant cost and it scales with rw*rh, so this is
     # where the frame budget is actually won. The result is scaled back up to
     # the window at the end.
-    scale = SPHERE_RENDER_SCALE
+    scale = _density()[1]
     rw = max(2, int(w * scale))
     rh = max(2, int(h * scale))
     if (rw, rh) == (w, h):
