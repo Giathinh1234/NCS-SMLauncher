@@ -41,6 +41,31 @@ UI handled it; nothing did. You got one track, and then the app sat on the
 final sample showing NOW PLAYING until you pressed next. Play an album now
 and it plays through.
 
+
+## Android
+
+The Android port now ships two APKs alongside the desktop builds. They install
+side by side -- different application ids -- so you can try one without
+uninstalling the other.
+
+| APK | size | torrents |
+|---|---|---|
+| `HashPlay-full-android-arm64.apk` | 14.8 MB | yes |
+| `HashPlay-lite-android-arm64.apk` | 2.5 MB | no |
+
+The lite APK is smaller than the full one by more than the torrent engine
+accounts for: R8 shrinks both, and with no reachable reference to libtorrent4j
+the 12.3 MB native library is dropped from lite entirely. Playback, the
+library, the visualizer and the first-run setup are identical in both.
+
+Torrents are the only thing lite gives up. Pasting a magnet into it says so
+rather than failing silently.
+
+Both are arm64, minSdk 26 (Android 8.0), and signed. They are distributed from
+this release, not Google Play, so there is no Play listing and no auto-update
+channel: install the APK and Android will ask once about installing from
+unknown sources.
+
 ## Playing a file that will not decode no longer kills the app
 
 `load()` had 18 call sites with no error handling, and miniaudio raises on a

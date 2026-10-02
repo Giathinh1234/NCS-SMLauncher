@@ -51,6 +51,33 @@ require(versionParts.size == 3 && versionParts.all { it.isNotEmpty() && it.all(C
 val (versionMajor, versionMinor, versionPatch) = versionParts.map(String::toInt)
 val appVersionCode = versionMajor * 10_000 + versionMinor * 100 + versionPatch
 
+// ---------------------------------------------------------------------------
+// Signing.
+//
+// The keystore is NOT in the repo. It comes from:
+//   * CI:  the HASHPLAY_KEYSTORE_B64 / _ALIAS / _PASSWORD secrets
+//   * you:  -Pkeystore=/path/to.jks -PstorePass=… -PkeyPass=… -PkeyAlias=…
+//           or the four HASHPLAY_* environment variables
+//
+// A release build with no key material is refused rather than silently
+// producing an unsigned APK. An unsigned APK cannot be installed on a real
+// device, so shipping one would mean shipping something broken that looks
+// finished. scripts/build_android_apks.sh generates a throwaway key for local
+// testing; see android/README.md before using one for anything real.
+// ---------------------------------------------------------------------------
+val HASHPLAY_KEYSTORE: String? =
+    (project.findProperty("keystore") as String?) ?: System.getenv("HASHPLAY_KEYSTORE")
+val HASHPLAY_STORE_PASS: String? =
+    (project.findProperty("storePass") as String?) ?: System.getenv("HASHPLAY_STORE_PASS")
+val HASHPLAY_KEY_PASS: String? =
+    (project.findProperty("keyPass") as String?) ?: System.getenv("HASHPLAY_KEY_PASS")
+val HASHPLAY_KEY_ALIAS: String? =
+    (project.findProperty("keyAlias") as String?) ?: System.getenv("HASHPLAY_KEY_ALIAS")
+
+val HASHPLAY_HAVE_SIGNING =
+    listOf(HASHPLAY_KEYSTORE, HASHPLAY_STORE_PASS,
+           HASHPLAY_KEY_PASS, HASHPLAY_KEY_ALIAS).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.giathinh.hashplay"
     compileSdk = 34
@@ -63,13 +90,114 @@ android {
         versionName = appVersionName
     }
 
-    buildFeatures { compose = true }
+    // -----------------------------------------------------------------------
+    // Two flavors, mirroring the desktop tiers.
+    //
+    //   full  everything, including the libtorrent4j engine (12.3 MB of .so)
+    //   lite  no torrent engine; src/lite/ supplies a no-op TorrentManager
+    //
+    // Each gets its own applicationId so both can be installed side by side.
+    // That is the point of shipping both: they are alternatives, and asking
+    // someone to uninstall one to try the other is how nobody tries either.
+    //
+    // The visualizer is NOT reduced in lite. The desktop lite build keeps the
+    // NCS ball and draws it from a third of its points; the Android visualizer
+    // is already a cheap Canvas renderer, so there is nothing worth removing.
+    // Lite here is about the 12 MB native library.
+    // -----------------------------------------------------------------------
+    flavorDimensions += "size"
+    productFlavors {
+        create("full") {
+            dimension = "size"
+            buildConfigField("boolean", "HAS_TORRENTS", "true")
+        }
+        create("lite") {
+            dimension = "size"
+            applicationIdSuffix = ".lite"
+            versionNameSuffix = "-lite"
+            buildConfigField("boolean", "HAS_TORRENTS", "false")
+        }
+    }
 
+    buildFeatures {
+        compose = true
+        // BuildConfig.HAS_TORRENTS is how shared UI knows which flavor it is
+        // in. AGP 8 does not generate BuildConfig unless this is set, and
+        // every reference to it fails to compile without it.
+        buildConfig = true
+    }
+
+    signingConfigs {
+        if (HASHPLAY_HAVE_SIGNING) {
+            create("release") {
+                storeFile = file(HASHPLAY_KEYSTORE!!)
+                storePassword = HASHPLAY_STORE_PASS
+                keyAlias = HASHPLAY_KEY_ALIAS
+                keyPassword = HASHPLAY_KEY_PASS
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8 both shrinks and lets the lite flavor lose libtorrent4j
+            // entirely: with the no-op stub there is no reachable reference to
+            // the engine, so the .so is removed from the package.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            if (HASHPLAY_HAVE_SIGNING) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                // An unsigned release APK cannot be installed on a real
+                // device, so refuse to build one rather than produce something
+                // that looks finished and is not.
+                logger.warn(
+                    "No keystore configured, so release APKs will NOT be built. " +
+                        "Set HASHPLAY_KEYSTORE/_STORE_PASS/_KEY_ALIAS/_KEY_PASS " +
+                        "or pass -Pkeystore=… -PstorePass=… -PkeyPass=… " +
+                        "-PkeyAlias=… . Debug builds are unaffected."
+                )
+            }
+        }
+    }
+
+    // APK splits are deliberately NOT enabled. A universal APK is what someone
+    // sideloading from a release page wants; split APKs are for Play, and these
+    // are distributed from GitHub.
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+// ---------------------------------------------------------------------------
+// Drop libtorrent4j's native library from the LITE flavor only.
+//
+// The lite TorrentManager (src/lite/) has no reference to the engine, but the
+// dependency stays declared because the full flavor compiles against it, and
+// declaring it is enough to package its 12.3 MB .so. R8 removes it from a
+// minified release, but debug builds do not run R8, so without this both APKs
+// came out byte-for-byte the same size with the engine in both.
+//
+// This has to be set through androidComponents rather than a `packaging { }`
+// block inside productFlavors: that block is NOT variant-scoped, and putting it
+// there silently removed the engine from the FULL build too -- which is the
+// opposite of intended and still produced a passing build.
+//
+// jniLibs only governs the .so. The Java classes are small and R8 handles them.
+// ---------------------------------------------------------------------------
+androidComponents {
+    onVariants { variant ->
+        val flavors = variant.productFlavors.map { it.second }
+        if (flavors.contains("lite") && !flavors.contains("full")) {
+            variant.packaging.jniLibs.excludes.add("**/libtorrent4j.so")
+        }
+    }
 }
 
 dependencies {

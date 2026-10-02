@@ -1,0 +1,12 @@
+# Signing keys must never be committed. Losing one also means never being able
+# to update a Google Play listing, so back the file up somewhere safe rather
+# than relying on this repo.
+keystore/
+
+# Machine-specific SDK path, written by the build script and CI.
+local.properties
+
+# Build output. Regenerable, and large.
+build/
+.gradle/
+.kotlin/
