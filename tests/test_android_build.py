@@ -199,6 +199,39 @@ check("MediaStore.Audio.Media.EXTERNAL_CONTENT_URI" in ctrl,
 check("ContentUris.withAppendedId" in ctrl,
       "the content URI is built with ContentUris")
 
+# There must be exactly ONE player. Previously PlaybackService built its own
+# ExoPlayer while PlayerController built a second, so playback died with the
+# activity, there was no media notification, and hardware media keys had
+# nothing to bind to -- four desktop features missing from one bug.
+print("\n  exactly one player, owned by the service")
+svc = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                        "hashplay", "PlaybackService.kt"))
+check(svc.count("ExoPlayer.Builder(") == 1,
+      "PlaybackService builds the only ExoPlayer")
+check("MediaSession.Builder(" in svc,
+      "that player is published in a MediaSession",
+      "without a session the lock screen, notification shade, Bluetooth, the "
+      "watch and Assistant all have nothing to control")
+check("setHandleAudioBecomingNoisy" in svc,
+      "playback pauses when headphones are unplugged")
+check("setAudioAttributes" in svc and "handleAudioFocus" not in svc.split(
+      "setAudioAttributes")[1][:200],
+      "audio attributes are declared")
+check("MediaController" in ctrl and "SessionToken" in ctrl,
+      "the UI connects to the service instead of owning a player",
+      "two players means the notification and the screen show different things")
+check(ctrl.count("ExoPlayer.Builder(") == 0,
+      "PlayerController builds NO player of its own",
+      "a second ExoPlayer here is the original bug")
+check("MediaController.Builder" in ctrl,
+      "PlayerController binds with MediaController.Builder")
+check("pendingPlay" in ctrl,
+      "a play pressed before the session binds is not lost")
+check("c?.release()" in ctrl and "player.release()" not in ctrl.split(
+      "fun release()")[1][:200],
+      "release() detaches without releasing the service's player",
+      "releasing here would kill playback for the notification too")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")
