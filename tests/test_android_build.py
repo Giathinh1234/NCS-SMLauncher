@@ -286,6 +286,64 @@ check(setup_screen.count("setup.complete()") >= 2,
 check("Not now" in setup_screen,
       "there is a visible way out that is not a grant")
 
+# ncs_video.py is 757 desktop lines and most of it CANNOT port. Only the local
+# video background is honest to bring across; the rest would be shipping a
+# YouTube downloader inside a music player.
+print("\n  video backgrounds: portable subset only (ncs_video.py)")
+vid = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                        "hashplay", "VideoBackground.kt"))
+gradle = read(os.path.join(REPO, "android", "app", "build.gradle.kts"))
+check("media3-ui" in gradle,
+      "media3-ui is a dependency (PlayerView needs it, and exoplayer does "
+      "not pull it in)")
+# The flavor split is what stops lite CALLING video. It does NOT keep the
+# library out of lite's dex -- R8 retains manifest-declared View subclasses
+# regardless. Measured: lite classes.dex 2.54 MB with media3-ui present.
+vid_full = read(os.path.join(REPO, "android", "app", "src", "full", "java",
+                             "com", "giathinh", "hashplay",
+                             "VideoBackground.kt"))
+vid_lite = read(os.path.join(REPO, "android", "app", "src", "lite", "java",
+                             "com", "giathinh", "hashplay",
+                             "VideoBackground.kt"))
+check("PlayerView" in vid_full,
+      "the full flavor has the real video implementation")
+check("PlayerView" not in vid_lite,
+      "the lite flavor does not",
+      "lite's contract is low resource use; it must not instantiate a player "
+      "view behind the ball")
+check("fullImplementation" not in gradle,
+      "no unsupported fullImplementation dependency is used",
+      "it does not resolve in this build script -- the dependencies block has "
+      "no per-flavor configuration, and adding it fails the build")
+for ext in ["mp4", "mkv", "webm", "avi", "mov", "m4v", "wmv", "flv", "3gp"]:
+    check(f'"{ext}"' in vid,
+          f"the desktop's .{ext} extension is recognised",
+          "the extension list lives in the shared VideoSupport object in "
+          "src/main, not in the per-flavor implementation")
+check("REPEAT_MODE_ONE" in vid_full,
+      "the background loops, as the desktop's does")
+check("volume = 0f" in vid_full,
+      "the background is MUTED",
+      "the player owns the audio focus; a second unmuted stream fights it")
+check("onDispose" in vid_full and ".release()" in vid_full,
+      "the video player is released with the composable",
+      "an ExoPlayer left running holds a decoder and a wake lock after the "
+      "screen it was behind is gone")
+check("onPlayerError" in vid_full,
+      "an undecodable video is dropped rather than shown as a black rectangle")
+# The parts deliberately NOT ported. These check for CODE, not for a mention:
+# an earlier version of these two greps matched the file's own explanatory
+# comment and failed the build for documenting what it was leaving out.
+check(not re.search(r"""["']yt[-_]?dlp["']""", vid),
+      "no yt-dlp source resolver was ported",
+      "resolve_source() (ncs_video.py:93-123) pulls over the network; that is "
+      "a different app with different legal exposure")
+check("fun readStrm" not in vid and ".strm\"" not in vid,
+      "no .strm stream support was ported",
+      ".strm points at a remote URL (ncs_video.py:76); same objection")
+check("UNSUPPORTED_NOTE" in vid,
+      "the limit is stated rather than silently failing on some files")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")

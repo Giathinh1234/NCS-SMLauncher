@@ -212,6 +212,22 @@ dependencies {
     // audio playback + visualizer
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-session:1.3.1")
+    // PlayerView, for the full build's video background. exoplayer does NOT
+    // pull this in, so it is declared explicitly.
+    //
+    // It is deliberately NOT scoped to the full flavor via a dependency
+    // handler: R8 keeps PlayerView even when lite never instantiates it,
+    // because media3-ui's own manifest declares these views as concrete
+    // View subclasses and R8 treats manifest components as shrinker roots.
+    // The flavor split in src/full and src/lite therefore stops lite CALLING
+    // video, but does not by itself keep the library out of lite's dex.
+    //
+    // Verified rather than assumed: lite's classes.dex is 2.54 MB with
+    // media3-ui present and its stub selected, and PlayerView/SubtitleView/
+    // TimeBar are all still in the lite dex. This is the same class of problem
+    // as the libtorrent .so exclusion at :179-200, except that one is jniLibs
+    // and this is Java classes, so the packaging block cannot reach it.
+    implementation("androidx.media3:media3-ui:1.3.1")
 
     // native torrent (infohash / magnet)
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-30")

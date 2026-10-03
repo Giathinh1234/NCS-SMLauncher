@@ -124,6 +124,12 @@ fun PlayerScreen(
             .clickable {
                 vizMode = VizMode.entries[(vizMode.ordinal + 1) % VizMode.entries.size]
             }) {
+            // A local video can sit behind the ball, the way it does on the
+            // desktop. Silent by design -- the player owns the audio focus.
+            val currentTrack = tracks.getOrNull(selected)
+            if (VideoSupport.isVideoFile(currentTrack?.path)) {
+                VideoBackground(currentTrack?.path)
+            }
             // NCS_BALL is the desktop's sphere renderer, ported. Lite keeps it
             // too -- the user was explicit that the lite build must still have
             // the ball, just drawn from fewer points.
