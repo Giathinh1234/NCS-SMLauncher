@@ -1,4 +1,4 @@
-# HashPlay 1.1.0-rc.4
+# HashPlay 1.1.0-rc.5
 
 A release candidate. **Marked prerelease on purpose** — the escape-hatch
 behaviour below has not been manually confirmed on a real keyboard, and this
@@ -45,7 +45,7 @@ and it plays through.
 ## Android
 
 The Android port now ships two APKs alongside the desktop builds. They install
-side by side -- different application ids -- so you can try one without
+side by side: different application ids, so you can try one without
 uninstalling the other.
 
 | APK | size | torrents |
@@ -65,6 +65,13 @@ Both are arm64, minSdk 26 (Android 8.0), and signed. They are distributed from
 this release, not Google Play, so there is no Play listing and no auto-update
 channel: install the APK and Android will ask once about installing from
 unknown sources.
+
+The lite APK is labelled "HashPlay Lite" on the home screen so the two icons
+are tellable apart at a glance.
+
+**Not verified:** neither APK has been run on a physical device or an emulator.
+They build, sign, and are shaped and labelled correctly, but "it installs and
+plays audio" has not been demonstrated. Treat the first install as a test.
 
 ## Playing a file that will not decode no longer kills the app
 
