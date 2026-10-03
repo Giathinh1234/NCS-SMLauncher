@@ -29,6 +29,7 @@ class PlayerController(context: Context) {
     private var player: Player? = null
     private var pendingPlay: Track? = null
     private var playlist: List<Track> = emptyList()
+    private var _volume = 1.0f
 
     init {
         val token = SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
@@ -37,6 +38,10 @@ class PlayerController(context: Context) {
             val c = try { future.get() } catch (t: Throwable) { null }
             if (c != null) {
                 player = c
+                // Apply the stored gain on connect. Setting it before the
+                // session exists silently does nothing, so a volume chosen
+                // during startup would be lost rather than honoured.
+                c.volume = _volume
                 c.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) { update() }
                     override fun onMediaItemTransition(item: MediaItem?, reason: Int) { update() }
@@ -138,9 +143,74 @@ class PlayerController(context: Context) {
         }
     }
 
+    /**
+     * In-app gain, 0.0..1.0, mirroring the desktop's Player.volume
+     * (ncs_launcher.py:229).
+     *
+     * This is NOT the system volume: it rides on the player, so it holds for
+     * Bluetooth and the notification as well, and so the app has the same
+     * control the desktop gives you. Defaults to 1.0 so it never starts quiet.
+     */
+    fun setVolume(v: Float) {
+        val clamped = v.coerceIn(0f, 1f)
+        _volume = clamped
+        player?.volume = clamped
+    }
+
+    fun volume(): Float = _volume
+
     fun togglePause() {
         val p = player ?: return
         if (p.isPlaying) p.pause() else p.play()
+    }
+
+    /**
+     * Skip forward or back one track.
+     *
+     * The desktop has these on K_DOWN / K_UP (ncs_launcher.py:2195-2204) and
+     * Android had no equivalent at all -- you could only move through the
+     * library by tapping another row, which loses your place.
+     *
+     * The desktop WRAPS: `selected = (selected +/- 1) % len(tracks)`. Going
+     * past the last track returns to the first rather than stopping, so this
+     * does the same. (My first version stopped at the ends, which is wrong
+     * and would quietly feel broken.)
+     *
+     * These deliberately DO play -- an explicit skip is a request for sound,
+     * unlike opening the app, which must stay silent.
+     */
+    fun skipNext() {
+        step(1)
+    }
+
+    fun skipPrevious() {
+        step(-1)
+    }
+
+    private fun step(delta: Int) {
+        val p = player ?: return
+        if (playlist.size < 2) {
+            // Nothing to step to. Still honour a restart-track request.
+            p.seekTo(0)
+            return
+        }
+        if (delta > 0 && p.hasNextMediaItem()) {
+            p.seekToNextMediaItem()
+        } else if (delta < 0 && p.hasPreviousMediaItem()) {
+            p.seekToPreviousMediaItem()
+        } else {
+            // At one end: wrap to the other, matching the desktop's modulo.
+            val target = if (delta > 0) 0 else playlist.size - 1
+            val track = playlist[target]
+            p.setMediaItems(
+                playlist.map { MediaItem.fromUri(it.uri()) }, target, 0L
+            )
+            _state.value = _state.value.copy(
+                title = track.title, artist = track.artist
+            )
+        }
+        p.prepare()
+        p.play()
     }
 
     fun seekTo(fraction: Float) {

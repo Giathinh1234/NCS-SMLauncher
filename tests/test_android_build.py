@@ -374,6 +374,37 @@ check("catch (t: Exception)" in player,
 
 picker = os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
                       "hashplay", "FolderPicker.kt")
+print("\n  transport parity with the desktop's K_UP / K_DOWN")
+# NB: the variable above named `player` holds PlayerSCREEN.kt. Reaching for it
+# as if it were the controller is how six of these checks failed at first.
+ctrl = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                         "hashplay", "PlayerController.kt"))
+# The desktop has these (ncs_launcher.py:2195-2204). Android had no way to move
+# between tracks except tapping another row, which loses your place in the queue.
+check("fun skipNext()" in ctrl and "fun skipPrevious()" in ctrl,
+      "next/previous exist on the controller")
+check("controller.skipNext()" in read(os.path.join(
+          ANDROID_SRC, "main", "java", "com", "giathinh",
+          "hashplay", "PlayerScreen.kt")),
+      "the next button is wired in the UI")
+check("controller.skipPrevious()" in read(os.path.join(
+          ANDROID_SRC, "main", "java", "com", "giathinh",
+          "hashplay", "PlayerScreen.kt")),
+      "the previous button is wired in the UI")
+# The desktop WRAPS at both ends: (selected +/- 1) % len(tracks).
+# Stopping silently at the end feels broken and is not what the desktop does.
+check("wrap to the other" in ctrl,
+      "skipping past either end wraps rather than stopping dead")
+
+print("\n  in-app gain, like the desktop's Player.volume (ncs_launcher.py:229)")
+check("fun setVolume(" in ctrl, "gain is settable")
+check("coerceIn(0f, 1f)" in ctrl, "gain is clamped to 0..1")
+check("c.volume = _volume" in ctrl,
+      "gain is applied when the session connects, not only when set -- "
+      "setting it before the player exists silently does nothing")
+check("_volume = 1.0f" in ctrl,
+      "gain defaults to full, never starts quiet")
+
 print("\n  add a folder of your choosing")
 check(os.path.exists(picker), "FolderPicker.kt exists")
 if os.path.exists(picker):

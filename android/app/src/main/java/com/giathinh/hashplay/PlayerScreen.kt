@@ -212,10 +212,53 @@ fun PlayerScreen(
                     Text(formatMs(now.positionMs) + " / " + formatMs(now.durationMs),
                         color = Color(0xFF8B91A5), fontSize = 11.sp)
                     Spacer(Modifier.width(6.dp))
+                    // The desktop has these on K_UP / K_DOWN
+                    // (ncs_launcher.py:2195-2204); Android had no way to move
+                    // between tracks except tapping another row, which throws
+                    // away your place in the queue.
+                    FilledTonalButton(
+                        onClick = { controller.skipPrevious() },
+                        contentPadding = PaddingValues(4.dp)
+                    ) {
+                        Text("⏮", color = Color(0xFF00E6B8))
+                    }
+                    Spacer(Modifier.width(4.dp))
                     FilledTonalButton(onClick = { controller.togglePause() },
                         contentPadding = PaddingValues(4.dp)) {
                         Text(if (now.isPlaying) "❚❚" else "▶", color = Color(0xFF00E6B8))
                     }
+                    Spacer(Modifier.width(4.dp))
+                    FilledTonalButton(
+                        onClick = { controller.skipNext() },
+                        contentPadding = PaddingValues(4.dp)
+                    ) {
+                        Text("⏭", color = Color(0xFF00E6B8))
+                    }
+                }
+
+                // In-app gain, the desktop's Player.volume (ncs_launcher.py:229).
+                // Separate from the system volume because it travels with the
+                // player, so it also governs Bluetooth and the notification.
+                var gain by remember { mutableFloatStateOf(controller.volume()) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("gain", color = Color(0xFF8B91A5), fontSize = 11.sp)
+                    Slider(
+                        value = gain,
+                        onValueChange = {
+                            gain = it
+                            controller.setVolume(it)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF00E6B8),
+                            activeTrackColor = Color(0xFF00E6B8),
+                            inactiveTrackColor = Color(0xFF242A3A)
+                        )
+                    )
+                    Text("${(gain * 100).toInt()}%", color = Color(0xFF8B91A5),
+                        fontSize = 11.sp)
                 }
             }
         }
