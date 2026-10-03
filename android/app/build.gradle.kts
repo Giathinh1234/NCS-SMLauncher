@@ -228,6 +228,8 @@ dependencies {
     // as the libtorrent .so exclusion at :179-200, except that one is jniLibs
     // and this is Java classes, so the packaging block cannot reach it.
     implementation("androidx.media3:media3-ui:1.3.1")
+    // DocumentFile, for picking a folder the user chooses. Brings in SAF.
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     // native torrent (infohash / magnet)
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-30")

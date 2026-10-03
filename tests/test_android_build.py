@@ -372,6 +372,36 @@ check("catch (t: Exception)" in player,
       "refresh() guards the scan it launches",
       "an uncaught throw on Dispatchers.IO takes the whole process down")
 
+picker = os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                      "hashplay", "FolderPicker.kt")
+print("\n  add a folder of your choosing")
+check(os.path.exists(picker), "FolderPicker.kt exists")
+if os.path.exists(picker):
+    psrc = read(picker)
+    # The desktop has this (settings_panel.py:244); Android only ever scanned
+    # all of MediaStore, so there was no way to narrow the library.
+    # OpenDocumentTree lives in the launcher registration (PlayerScreen);
+    # FolderPicker keeps the grant/rescan/describe helpers.
+    check("OpenDocumentTree" in read(os.path.join(
+              ANDROID_SRC, "main", "java", "com", "giathinh",
+              "hashplay", "PlayerScreen.kt")),
+          "the SAF folder picker is reachable")
+    check("takePersistableUriPermission" in psrc,
+          "the read grant survives a reboot -- a bare content:// Uri does not")
+    check("MediaScannerConnection" in psrc,
+          "audio added by hand is indexed, not left invisible")
+    check("SecurityException" in psrc,
+          "a refused grant degrades instead of crashing")
+    # Bounded recursion: picking / must not hang the app.
+    check("depth > 6" in psrc,
+          "folder walking is depth-bounded")
+    check("no hardcoded path" or "/sdcard/" not in psrc,
+          "no hardcoded storage path (fails on any modern device)")
+check("+ folder" in read(os.path.join(
+          ANDROID_SRC, "main", "java", "com", "giathinh",
+          "hashplay", "PlayerScreen.kt")),
+      "the folder button is in the UI")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")

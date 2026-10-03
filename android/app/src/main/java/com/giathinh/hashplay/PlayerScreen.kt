@@ -91,6 +91,25 @@ fun PlayerScreen(
     ) { granted ->
         if (granted.values.any { it }) refresh()
     }
+
+    // Folder picking, via the Storage Access Framework. The grant is persisted
+    // so the folder is still readable after a reboot -- a bare content:// Uri is
+    // not. MediaStore is then told to rescan, because audio copied in by hand
+    // does not appear in the library until something asks the provider to look.
+    var folderNote by remember { mutableStateOf<String?>(null) }
+    val folderLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts
+            .OpenDocumentTree()
+    ) { tree ->
+        if (tree != null) {
+            val persisted = FolderPicker.persist(context, tree)
+            FolderPicker.requestRescan(context, tree)
+            SetupState(context).libraryFolder =
+                (persisted ?: tree).toString()
+            folderNote = "+ ${FolderPicker.describe(context, tree)}"
+            refresh()
+        }
+    }
     LaunchedEffect(Unit) {
         if (!permsAsked) {
             permsAsked = true
@@ -122,6 +141,15 @@ fun PlayerScreen(
             Spacer(Modifier.width(10.dp))
             Text("stream · download · listen", color = Color(0xFF8B91A5), fontSize = 12.sp)
             Spacer(Modifier.weight(1f))
+            // Add a folder of the user's choosing. The desktop has this
+            // (settings_panel.py:244) and Android only ever scanned all of
+            // MediaStore, so there was no way to narrow the library.
+            // OpenDocumentTree() takes no input and already requests a persistable read
+            // grant, so there is no Intent to hand it. FolderPicker.intent() is
+            // kept for callers that want to launch the picker themselves.
+            TextButton(onClick = { folderLauncher.launch(null) }) {
+                Text("+ folder", color = Color(0xFF8B91A5))
+            }
             TextButton(onClick = { showTorrentSheet = true }) {
                 Text("+ torrent", color = Color(0xFF00E6B8))
             }
@@ -150,9 +178,14 @@ fun PlayerScreen(
                 Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
             }
             if (!now.isPlaying && now.title.isEmpty()) {
-                Text("tap +torrent to paste an infohash",
-                    color = Color(0xFF555C70), fontSize = 12.sp,
-                    modifier = Modifier.align(Alignment.Center))
+                // Sits BELOW the ball, not on it. Centred over the sphere it
+                // drew straight through the point cloud and made both look
+                // broken -- caught on a Nokia T20 screenshot.
+                Text("tap a track to play · +torrent for a magnet link",
+                    color = Color(0xFF6E768C), fontSize = 11.sp,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 10.dp))
             }
         }
 
