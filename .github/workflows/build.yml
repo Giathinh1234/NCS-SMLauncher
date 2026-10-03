@@ -150,36 +150,46 @@ jobs:
           java-version: "17"
 
       # NOT android-actions/setup-android@v3.
-
-      # That action is what has been failing, and not because of anything in
-      # this repo. On the runner image in use (ubuntu-24.04, 20260927.320.1)
-      # it finds a preinstalled sdkmanager 12.0, downloads 16.0, and then
-      # runs `sdkmanager tools` as part of its own setup:
       #
-      #   [command].../cmdline-tools/16.0/bin/sdkmanager tools
-      #   Warning: Failed to find package 'tools'
-      #   Error: The process '.../sdkmanager' failed with exit code 1
+      # That action fails on the current runner image (ubuntu-24.04,
+      # 20260927.320.1): it downloads sdkmanager 16.0, runs `sdkmanager tools`
+      # as part of its own setup, and 'tools' is not a package modern
+      # command-line-tools ship, so it exits 1. Three rc.5 runs died there
+      # identically, inside the action's own index.js.
       #
-      # 'tools' is not a package modern command-line-tools ship, so the action
-      # cannot succeed on this image. Two rc.5 runs failed here identically.
+      # Removing it exposed the next layer: the image ships the SDK but does
+      # NOT put sdkmanager on PATH, so calling it bare fails with exit 127.
+      # That is why the action is normally used -- but it also means the SDK is
+      # already here and only the two packages we need may be missing.
       #
-      # The runner image already has the SDK, a JDK and licences accepted, so
-      # nothing is needed from the action at all. sdkmanager is on PATH.
-      - name: Show what the runner already provides
+      # So: find sdkmanager wherever the image put it, and report what the
+      # image actually provides before changing anything.
+      - name: Locate the SDK tooling the image ships
         run: |
           set -euo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
-          ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}" || true
-          sdkmanager --version || true
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK"
+          # Newest first, so 16.0 wins over the stale 12.0.
+          SDKMANAGER=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::no sdkmanager under $SDK/cmdline-tools/*/bin"
+            exit 1
+          fi
+          echo "sdkmanager=$SDKMANAGER"
+          chmod +x "$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "PATH=$SDKMANAGER:$(dirname "$SDKMANAGER"):$PATH" >> "$GITHUB_ENV"
+          "$SDKMANAGER" --version || true
+          echo "--- platforms present ---"
+          ls "$SDK/platforms" 2>/dev/null || echo "  (none)"
+          echo "--- build-tools present ---"
+          ls "$SDK/build-tools" 2>/dev/null || echo "  (none)"
 
       - name: Install the SDK packages this app needs
-        # setup-android normally accepts the licences for us. Without it that
-        # is done here instead -- `yes |` rather than `|| true`, because a
-        # silently unaccepted licence only fails much later and less clearly.
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Cache Gradle
         uses: actions/cache@v4
