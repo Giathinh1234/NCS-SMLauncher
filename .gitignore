@@ -135,3 +135,4 @@ tests/__pycache__/
 *.orig
 *.rej
 .DS_Store
+.screenshots/
