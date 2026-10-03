@@ -38,7 +38,8 @@ KEY_ALIAS="${HASHPLAY_KEY_ALIAS:-}"
 if [ "$MODE" = "debug" ]; then
   echo "  debug build: no keystore needed (APG signs with the debug key)"
   ./gradlew --console=plain \
-    $([ "$FLAVOR" = both ] && echo "assembleFullDebug assembleLiteDebug" || echo "assemble${FLAVOR^}Debug") \
+    $([ "$FLAVOR" = both ] && echo "assembleFullDebug assembleLiteDebug" || \
+      { [ "$FLAVOR" = full ] && echo assembleFullDebug || echo assembleLiteDebug; }) \
     2>&1 | grep -viE "^Download|SDK processing" || true
   exit 0
 fi
@@ -107,9 +108,13 @@ keytool -list -keystore "$KS_PATH" -storepass "$KS_PASS" -alias "$KEY_ALIAS" \
 
 # --- build -----------------------------------------------------------------
 case "$FLAVOR" in
-  full|lite) TASKS="assemble${FLAVOR^}Release" ;;
-  both)      TASKS="assembleFullRelease assembleLiteRelease" ;;
-  *)         die "flavor must be full, lite or both (got '$FLAVOR')" ;;
+  # Spelled out rather than using ${FLAVOR^}: that is a bash-ism and this
+  # script runs under /bin/sh, where it dies with "bad substitution" only
+  # when a single flavor is requested -- so `both` kept working and hid it.
+  full)     TASKS="assembleFullRelease" ;;
+  lite)     TASKS="assembleLiteRelease" ;;
+  both)     TASKS="assembleFullRelease assembleLiteRelease" ;;
+  *)        die "flavor must be full, lite or both (got '$FLAVOR')" ;;
 esac
 
 echo "  building: $TASKS"

@@ -127,6 +127,26 @@ for symbol in ("class TorrentManager", "data class Status", "val statuses",
 # ABS_MT_POSITION_X, so `input tap` injects events nothing consumes, silently).
 # Keyboard events still work; touch does not. So the refusal path is checked
 # against the source here instead of being claimed as device-verified.
+# A bash-ism hid here: the script runs under /bin/sh and used ${FLAVOR^},
+# which only fails when ONE flavor is requested. `both` took a separate branch
+# and always worked, so every test that built both flavors passed while
+# `build_android_apks.sh full` died with "bad substitution" on the line before
+# Gradle was ever invoked.
+print("\n  the APK build script runs under /bin/sh, not just bash")
+script = read(REPO + "/scripts/build_android_apks.sh")
+_code = "\n".join(l for l in script.splitlines()
+                  if not l.lstrip().startswith("#"))
+check("${FLAVOR^}" not in _code and "${FLAVOR^^}" not in _code,
+      "the script uses no bash-only uppercase expansion",
+      "it is invoked as ./scripts/build_android_apks.sh so the shebang picks the "
+      "shell, and ${VAR^} is not POSIX -- under sh it is 'bad substitution'")
+for flavor, task in (("full", "assembleFullRelease"),
+                     ("lite", "assembleLiteRelease"),
+                     ("both", "assembleFullRelease assembleLiteRelease")):
+    check(task in script,
+          f"building {flavor!r} names {task!r} explicitly",
+          "each flavor must map to its own Gradle task, or one branch goes untested")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 player = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
                           "hashplay", "PlayerScreen.kt"))

@@ -30,6 +30,27 @@ class PlayerController(context: Context) {
     // 64 bars, updated by the UI loop from player energy
     val spectrum = MutableStateFlow(FloatArray(64))
 
+    /** Energy in the lowest bins. Drives the sphere's warp amplitude. */
+    fun bass(): Float {
+        val m = spectrum.value
+        if (m.isEmpty()) return 0f
+        var sum = 0f
+        val n = minOf(6, m.size)
+        for (i in 0 until n) sum += m[i]
+        return (sum / n).coerceIn(0f, 1f)
+    }
+
+    /** Overall RMS-ish level. The desktop found a separate radial scale term
+     *  keeps the ball's response monotonic, which an amplitude-only warp does
+     *  not: raising the warp reshuffles which limb points end up outermost. */
+    fun level(): Float {
+        val m = spectrum.value
+        if (m.isEmpty()) return 0f
+        var sum = 0f
+        for (v in m) sum += v * v
+        return kotlin.math.sqrt(sum / m.size).coerceIn(0f, 1f)
+    }
+
     init {
         player.addListener(object : androidx.media3.common.Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {

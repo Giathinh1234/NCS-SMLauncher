@@ -18,7 +18,7 @@ import kotlin.math.sin
 /**
  * NCS-style neon visualizer: rainbow bars with glow, mirror mode, and radial.
  */
-enum class VizMode { BARS, MIRROR, RADIAL }
+enum class VizMode { BARS, MIRROR, RADIAL, NCS_BALL }
 
 private fun hsv(hue: Float, s: Float = 0.95f, v: Float = 1f): Color {
     val h = ((hue % 1f) + 1f) % 1f
@@ -43,6 +43,7 @@ fun Visualizer(
     Canvas(modifier.fillMaxSize()) {
         val mags = spectrum.value
         when (mode) {
+            VizMode.NCS_BALL -> Unit  // drawn by NcsSphereView
             VizMode.BARS -> drawBars(mags, mirrored = false)
             VizMode.MIRROR -> drawBars(mags, mirrored = true)
             VizMode.RADIAL -> drawRadial(mags)

@@ -31,7 +31,7 @@ fun PlayerScreen(
 
     var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     var selected by remember { mutableStateOf(-1) }
-    var vizMode by remember { mutableStateOf(VizMode.BARS) }
+    var vizMode by remember { mutableStateOf(VizMode.NCS_BALL) }
     var showTorrentSheet by remember { mutableStateOf(false) }
     var magnetInput by remember { mutableStateOf("") }
 
@@ -79,7 +79,17 @@ fun PlayerScreen(
             .clickable {
                 vizMode = VizMode.entries[(vizMode.ordinal + 1) % VizMode.entries.size]
             }) {
-            Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
+            // NCS_BALL is the desktop's sphere renderer, ported. Lite keeps it
+            // too -- the user was explicit that the lite build must still have
+            // the ball, just drawn from fewer points.
+            if (vizMode == VizMode.NCS_BALL) {
+                val tier = if (BuildConfig.HAS_TORRENTS) NcsSphere.Tier.FULL
+                           else NcsSphere.Tier.LITE
+                NcsSphereView(spectrumState.value, controller.bass(), controller.level(),
+                              tier, Modifier.fillMaxSize())
+            } else {
+                Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
+            }
             if (!now.isPlaying && now.title.isEmpty()) {
                 Text("tap +torrent to paste an infohash",
                     color = Color(0xFF555C70), fontSize = 12.sp,
