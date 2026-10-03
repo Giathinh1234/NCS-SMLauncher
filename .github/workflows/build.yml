@@ -206,7 +206,7 @@ jobs:
 
           chmod +x "$SDKMANAGER" 2>/dev/null || true
           echo "using sdkmanager: $SDKMANAGER"
-          echo "sdkmanager=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           echo "PATH=$(dirname "$SDKMANAGER"):$PATH" >> "$GITHUB_ENV"
           "$SDKMANAGER" --version || true
           echo "--- platforms present ---"
@@ -217,6 +217,10 @@ jobs:
       - name: Install the SDK packages this app needs
         run: |
           set -euo pipefail
+          # The exported name must match what this step reads. It was exported as
+          # lowercase 'sdkmanager' and read as "$SDKMANAGER"; GitHub passes
+          # GITHUB_ENV entries through verbatim, so under `set -u` the read was
+          # an unbound variable and killed the step in milliseconds.
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
 
