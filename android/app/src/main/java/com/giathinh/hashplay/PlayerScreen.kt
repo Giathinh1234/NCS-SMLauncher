@@ -72,9 +72,10 @@ fun PlayerScreen(
         if (tracks.isNotEmpty()) controller.setPlaylist(tracks)
     }
 
-    // The manifest declared READ_MEDIA_AUDIO but nothing ever requested it at
-    // runtime, so on a fresh install the user was never asked and the library
-    // scan silently returned nothing. Ask on first composition, then rescan.
+    // Permissions are requested by SetupScreen on first run, behind an
+    // explanation. PlayerScreen still re-asks ONLY if they were somehow never
+    // granted, because the library is silently empty without them and there is
+    // no error anywhere else to explain why.
     var permsAsked by remember { mutableStateOf(false) }
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts

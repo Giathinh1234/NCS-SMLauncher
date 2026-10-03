@@ -256,6 +256,36 @@ check("skipBroken" in ctrl and "onPlayerError" in ctrl,
 check("seekToNextMediaItem" in ctrl,
       "skipping broken tracks walks the playlist")
 
+# The desktop gates on setup_wizard.py's needs_setup() (:224-234): once setup is
+# marked complete it never nags again, even if the user walked away. Android had
+# no first run at all -- it went straight to the player.
+print("\n  first run exists and never nags (setup_wizard.py:224-234)")
+setup = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                         "hashplay", "SetupState.kt"))
+main_act = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                             "hashplay", "MainActivity.kt"))
+check("fun needsSetup()" in setup,
+      "there is a first-run gate at all")
+check("setup_complete" in setup,
+      "completion is recorded under the desktop's own key name")
+check("not bool(self.cfg.get(\"setup_complete\"))" not in setup and
+      "!prefs.getBoolean(KEY_COMPLETE, false)" in setup,
+      "setup is needed only while setup_complete is false")
+check("fun complete()" in setup,
+      "completion can be recorded")
+check("SetupScreen" in main_act and "needsSetup()" in main_act,
+      "MainActivity shows SetupScreen on first run")
+# Escape is an answer: SetupScreen must complete() on BOTH paths, not just the
+# grant path, or a user who backs out gets nagged on every launch.
+setup_screen = read(os.path.join(ANDROID_SRC, "main", "java", "com",
+                                 "giathinh", "hashplay", "SetupScreen.kt"))
+check(setup_screen.count("setup.complete()") >= 2,
+      "both continuing and skipping mark setup complete",
+      "if only the grant path completes, every launch nags a user who backed "
+      "out -- exactly what setup_wizard.py:229-231 refuses to do")
+check("Not now" in setup_screen,
+      "there is a visible way out that is not a grant")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")
