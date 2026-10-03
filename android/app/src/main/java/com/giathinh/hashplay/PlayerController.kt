@@ -60,7 +60,16 @@ class PlayerController(context: Context) {
     }
 
     fun play(track: Track) {
-        player.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(java.io.File(track.path))))
+        // Uri.fromFile() is both wrong and fatal here. Under scoped storage the
+        // path is not readable, and a file:// Uri handed to another process
+        // throws FileUriExposedException on Android 7+. Track.id is already
+        // populated by LibraryScanner and was unused, so this costs nothing.
+        val uri = if (track.id > 0)
+            android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, track.id)
+        else
+            android.net.Uri.fromFile(java.io.File(track.path))
+        player.setMediaItem(MediaItem.fromUri(uri))
         player.prepare()
         player.playWhenReady = true
         _state.value = _state.value.copy(title = track.title, artist = track.artist)

@@ -147,9 +147,59 @@ for flavor, task in (("full", "assembleFullRelease"),
           f"building {flavor!r} names {task!r} explicitly",
           "each flavor must map to its own Gradle task, or one branch goes untested")
 
-print("\n  lite refuses loudly rather than appearing to succeed")
+# Three bugs that made the app look alive while being inert. Found by an
+# independent read of the code, then confirmed here by grep before fixing.
+# Each one compiled, installed, launched, and rendered a screenshot -- and was
+# still broken. None would ever have failed CI.
+print("\n  the app is not inert (all three compiled, installed, and rendered)")
 player = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
                           "hashplay", "PlayerScreen.kt"))
+
+# 1. PlayerController.tick() existed but NOTHING called it. It is what advances
+#    the seek bar and feeds the spectrum, so the slider sat at 0:00 and the
+#    visualizer never moved even while audio played.
+tick_def = [l for l in open(os.path.join(ANDROID_SRC, "main", "java", "com",
+                                         "giathinh", "hashplay",
+                                         "PlayerController.kt")).read()
+            .splitlines() if "fun tick(" in l]
+check(len(tick_def) == 1, "PlayerController declares tick()")
+check("controller.tick(" in player,
+      "PlayerScreen CALLS tick() every frame",
+      "a tick() with no caller means a frozen slider and a frozen visualizer")
+check("withFrameNanos" in player,
+      "the frame clock is driven by the composition",
+      "LaunchedEffect + withFrameNanos starts and stops with the screen")
+
+# 2. The manifest declared the audio permissions, but nothing ever requested
+#    them at runtime. Declaring makes the app installable; the user still has to
+#    grant. Until then the library scan returns nothing and playback fails.
+manifest = read(os.path.join(REPO, "android", "app", "src", "main",
+                             "AndroidManifest.xml"))
+check("READ_MEDIA_AUDIO" in manifest, "the manifest declares READ_MEDIA_AUDIO")
+check("RequestMultiplePermissions" in player or
+      "requestPermissions" in player,
+      "the app ASKS for that permission at runtime",
+      "a manifest entry alone is not a grant; without this the library is "
+      "always empty on a fresh install")
+check(read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                        "hashplay", "Permissions.kt")).count("READ_MEDIA_AUDIO") >= 1,
+      "Permissions.kt picks the right read permission per API level",
+      "READ_MEDIA_AUDIO only exists on API 33+; below that it is "
+      "READ_EXTERNAL_STORAGE")
+
+# 3. play() used Uri.fromFile(), which is both unreadable under scoped storage
+#    and fatal when handed to another app (FileUriExposedException on 7+).
+#    Track.id was already populated by LibraryScanner and never used.
+ctrl = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                         "hashplay", "PlayerController.kt"))
+check("MediaStore.Audio.Media.EXTERNAL_CONTENT_URI" in ctrl,
+      "play() builds a content:// URI from the MediaStore id",
+      "Uri.fromFile is not readable under scoped storage and throws when "
+      "passed across a process boundary")
+check("ContentUris.withAppendedId" in ctrl,
+      "the content URI is built with ContentUris")
+
+print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")
 check(re.search(r"tMessage\?\.let", player) is not None,

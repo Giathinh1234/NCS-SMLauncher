@@ -37,6 +37,25 @@ fun PlayerScreen(
 
     val now by controller.state.collectAsState()
     val spectrumState = controller.spectrum.collectAsState()
+
+    // The frame clock. PlayerController.tick() refreshes position, spectrum and
+    // decay, and NOTHING called it -- so the seek slider sat at 0:00 and the
+    // visualizer never moved even while audio played. withFrameNanos is tied to
+    // the composition, so it starts and stops with the screen for free.
+    LaunchedEffect(Unit) {
+        val start = withFrameNanos { it }
+        var last = start
+        while (true) {
+            withFrameNanos { now ->
+                // tick() takes elapsed seconds because the spectrum is a
+                // function of playback time, not wall time.
+                if (now - last >= 33_000_000L) {   // ~30 Hz is plenty
+                    controller.tick((now - start) / 1_000_000_000f)
+                    last = now
+                }
+            }
+        }
+    }
     val tStatuses by torrents.statuses.collectAsState()
     val tMessage by torrents.messages.collectAsState()
 
@@ -44,6 +63,25 @@ fun PlayerScreen(
     fun refresh() {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             tracks = LibraryScanner.scan(context)
+        }
+    }
+
+    // The manifest declared READ_MEDIA_AUDIO but nothing ever requested it at
+    // runtime, so on a fresh install the user was never asked and the library
+    // scan silently returned nothing. Ask on first composition, then rescan.
+    var permsAsked by remember { mutableStateOf(false) }
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts
+            .RequestMultiplePermissions()
+    ) { granted ->
+        if (granted.values.any { it }) refresh()
+    }
+    LaunchedEffect(Unit) {
+        if (!permsAsked) {
+            permsAsked = true
+            val missing = Permissions.needed()
+                .filterNot { Permissions.granted(context, it) }
+            if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
         }
     }
     LaunchedEffect(Unit) { refresh() }
