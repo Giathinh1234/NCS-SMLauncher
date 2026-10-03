@@ -9,7 +9,21 @@ data class Track(
     val artist: String,
     val path: String,
     val durationMs: Long
-)
+) {
+    /**
+     * A URI ExoPlayer can actually open.
+     *
+     * Uri.fromFile() is not readable under scoped storage, and a file:// Uri
+     * passed to another process throws FileUriExposedException on Android 7+.
+     * The MediaStore id is what we should be using; the raw path is only a
+     * fallback for files that came from somewhere other than MediaStore.
+     */
+    fun uri(): android.net.Uri = if (id > 0)
+        android.content.ContentUris.withAppendedId(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+    else
+        android.net.Uri.fromFile(java.io.File(path))
+}
 
 object LibraryScanner {
 

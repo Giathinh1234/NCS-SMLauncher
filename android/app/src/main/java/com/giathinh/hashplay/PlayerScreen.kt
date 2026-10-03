@@ -66,6 +66,12 @@ fun PlayerScreen(
         }
     }
 
+    // Keep the player's queue identical to the visible list, so "next" means
+    // what the user sees and the notification's next button does the same.
+    LaunchedEffect(tracks) {
+        if (tracks.isNotEmpty()) controller.setPlaylist(tracks)
+    }
+
     // The manifest declared READ_MEDIA_AUDIO but nothing ever requested it at
     // runtime, so on a fresh install the user was never asked and the library
     // scan silently returned nothing. Ask on first composition, then rescan.

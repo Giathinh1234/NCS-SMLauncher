@@ -192,12 +192,16 @@ check(read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
 #    Track.id was already populated by LibraryScanner and never used.
 ctrl = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
                          "hashplay", "PlayerController.kt"))
-check("MediaStore.Audio.Media.EXTERNAL_CONTENT_URI" in ctrl,
+scanner = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                            "hashplay", "LibraryScanner.kt"))
+check("MediaStore.Audio.Media.EXTERNAL_CONTENT_URI" in scanner,
       "play() builds a content:// URI from the MediaStore id",
       "Uri.fromFile is not readable under scoped storage and throws when "
       "passed across a process boundary")
-check("ContentUris.withAppendedId" in ctrl,
-      "the content URI is built with ContentUris")
+check("ContentUris.withAppendedId" in scanner,
+      "the content URI is built with ContentUris",
+      "the URI logic moved onto Track.uri() so the playlist can map over "
+      "every item; assert it there, not in PlayerController")
 
 # There must be exactly ONE player. Previously PlaybackService built its own
 # ExoPlayer while PlayerController built a second, so playback died with the
@@ -231,6 +235,26 @@ check("c?.release()" in ctrl and "player.release()" not in ctrl.split(
       "fun release()")[1][:200],
       "release() detaches without releasing the service's player",
       "releasing here would kill playback for the notification too")
+
+# Setting one track at a time meant NOTHING advanced when it ended: the player
+# held the last sample and the UI still said NOW PLAYING. The desktop fixed the
+# identical bug at ncs_launcher.py:1980-2013.
+print("\n  playback advances like the desktop (ncs_launcher.py:1980-2013)")
+check("setMediaItems(" in ctrl and "setMediaItem(" not in ctrl,
+      "play() queues the WHOLE library, not one track",
+      "a single-item queue cannot advance: the track ends and nothing happens")
+check("fun setPlaylist(" in ctrl,
+      "the queue is set from the visible track list")
+check("setPlaylist(tracks)" in player,
+      "the UI keeps the player's queue equal to the list on screen")
+check("indexOfFirst" in ctrl,
+      "the tapped track is located inside that queue")
+check("skipBroken" in ctrl and "onPlayerError" in ctrl,
+      "a track that fails to decode is stepped past",
+      "ExoPlayer does NOT advance after a playback error, so one bad file "
+      "would otherwise stop playback permanently")
+check("seekToNextMediaItem" in ctrl,
+      "skipping broken tracks walks the playlist")
 
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.

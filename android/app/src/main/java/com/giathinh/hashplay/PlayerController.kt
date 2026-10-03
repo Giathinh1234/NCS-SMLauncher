@@ -28,6 +28,7 @@ class PlayerController(context: Context) {
     private val appContext = context.applicationContext
     private var player: Player? = null
     private var pendingPlay: Track? = null
+    private var playlist: List<Track> = emptyList()
 
     init {
         val token = SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
@@ -39,6 +40,10 @@ class PlayerController(context: Context) {
                 c.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) { update() }
                     override fun onMediaItemTransition(item: MediaItem?, reason: Int) { update() }
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        // ExoPlayer does not step past a failed item on its own.
+                        skipBroken()
+                    }
                 })
                 pendingPlay?.let { play(it) }
                 pendingPlay = null
@@ -89,17 +94,48 @@ class PlayerController(context: Context) {
         val p = player ?: run { pendingPlay = track; return }
         // Uri.fromFile() is both wrong and fatal here. Under scoped storage the
         // path is not readable, and a file:// Uri handed to another process
-        // throws FileUriExposedException on Android 7+. Track.id is already
-        // populated by LibraryScanner and was unused, so this costs nothing.
-        val uri = if (track.id > 0)
-            android.content.ContentUris.withAppendedId(
-                android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, track.id)
-        else
-            android.net.Uri.fromFile(java.io.File(track.path))
-        p.setMediaItem(MediaItem.fromUri(uri))
+        // throws FileUriExposedException on Android 7+. Track.uri() builds the
+        // MediaStore content:// Uri and uses the path only as a fallback.
+        //
+        // The WHOLE library goes in as a playlist, not just this one track.
+        // Previously each track was set on its own, so when one ended nothing
+        // happened -- the player held the last sample and the screen still said
+        // NOW PLAYING until you tapped next by hand. The desktop fixed that
+        // same bug in ncs_launcher.py:1980-2013.
+        //
+        // Letting the real engine advance is what also makes the notification's
+        // next button and a Bluetooth skip-forward work: both were dead because
+        // there was only ever one item in the queue.
+        val items = if (playlist.isEmpty()) listOf(track) else playlist
+        val start = items.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        p.setMediaItems(items.map { MediaItem.fromUri(it.uri()) }, start, 0L)
         p.prepare()
         p.playWhenReady = true
         _state.value = _state.value.copy(title = track.title, artist = track.artist)
+    }
+
+    /** The UI sets this so the playlist matches the visible list. */
+    fun setPlaylist(items: List<Track>) {
+        playlist = items
+    }
+
+    /**
+     * Step past a track that will not decode, the way the desktop does.
+     *
+     * ncs_launcher.py:2004-2013 -- a track that will not load gets a short
+     * cooldown and the desktop walks the library until one works. ExoPlayer
+     * does NOT advance after a playback error, so without this a single
+     * undecodable file stops playback permanently.
+     */
+    private fun skipBroken() {
+        val p = player ?: return
+        if (playlist.size < 2) return
+        repeat(playlist.size) {
+            p.seekToNextMediaItem()
+            p.prepare()
+            p.playWhenReady = true
+            if (p.playerError == null) return
+        }
     }
 
     fun togglePause() {
