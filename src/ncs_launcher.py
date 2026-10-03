@@ -263,8 +263,13 @@ class Player(threading.Thread):
             out *= self.volume
         outdata[:] = out
 
-    def load(self, path):
+    def load(self, path, start_paused=False):
         """Decode a track and start it. Returns True, or False and reports.
+
+        `start_paused` decodes and positions the playhead WITHOUT making sound.
+        The audio stream is opened once at startup and runs continuously, so
+        "loaded but silent" is the only state that can exist between app launch
+        and the first deliberate play.
 
         Never raises. miniaudio raises DecodeError on a truncated, zero-length
         or otherwise corrupt file, and this had 18 call sites -- click
@@ -294,7 +299,7 @@ class Player(threading.Thread):
             self.samples = samples
             self.pos = 0
             self.track_path = path
-            self.paused = False
+            self.paused = bool(start_paused)
         return True
 
     def finished(self):
@@ -1408,7 +1413,9 @@ def main():
     muted = False
     start_time = time.time()
     if tracks:
-        player.load(tracks[0]['path'])
+        # start_paused: opening the app must not make sound. The first
+        # play has to be a deliberate press, not a side effect of launching.
+        player.load(tracks[0]['path'], start_paused=True)
         current_easter_art = get_easter_art_for_track(tracks[0]['path'])
     else:
         current_easter_art = None
@@ -1812,7 +1819,9 @@ def main():
         # library -- an uncaught IndexError on the next frame.
         nonlocal_selected[0] = 0
         if tracks:
-            player.load(tracks[0]['path'])
+            # Silent: choosing a folder shows the library, it does
+            # not start playing it.
+            player.load(tracks[0]['path'], start_paused=True)
         push_notice(("info", f"library: {folder}"))
         save_settings()
         return True
@@ -1834,7 +1843,8 @@ def main():
         selected = 0
         nonlocal_selected[0] = 0
         if tracks:
-            player.load(tracks[0]['path'])
+            # Silent, for the same reason as do_pick_folder.
+            player.load(tracks[0]['path'], start_paused=True)
         return True
 
     def do_action(act, shifted=False):

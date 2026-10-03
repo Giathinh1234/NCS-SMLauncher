@@ -126,12 +126,24 @@ class NcsSphere(private val fullDensity: Float = 1.00f,
             // equator and highs the caps, which is what the desktop does.
             val band = ((p.lat + 1.5708f) / 3.1416f * (mags.size - 1))
                 .toInt().coerceIn(0, mags.size - 1)
-            val mag = mags[band] + 0.15f * mags[(band / 3).coerceIn(0, mags.size - 1)]
+            // The IDLE_FLOOR is the important part. The desktop drives this ball
+            // from a wave field (ncs_sphere.py:360-383) that has structure
+            // whether or not audio is playing -- the audio bends the shape, it
+            // does not create it.
+            //
+            // Multiplying the warp by `mag` alone meant that at rest every
+            // value was zero, every point drew flat, and the ball was an almost
+            // invisible ghost. Confirmed on hardware: it rendered as a faint
+            // dotted outline rather than a sphere.
+            val mag = IDLE_FLOOR + mags[band]
+                + 0.15f * mags[(band / 3).coerceIn(0, mags.size - 1)]
 
             // Domain warp: two out-of-phase travelling waves, so the bands
             // twist instead of merely pulsing.
             val w1 = sin(p.lon * 3f + t * 2.1f + p.seed * 6.2f)
             val w2 = cos(p.lat * 4f - t * 1.7f + p.seed * 3.1f)
+            // The warp now scales with the RESTING field plus the audio, so the
+            // ball keeps its shape when paused and gains amplitude on music.
             val warp = warpAmp * (mag * w1 + 0.6f * mag * w2)
 
             val scale = radialScale * (1f + warp)
@@ -188,9 +200,18 @@ class NcsSphere(private val fullDensity: Float = 1.00f,
     internal fun gridFor(width: Int, height: Int, tier: Tier): List<P> {
         val radius = ballRadius(width, height)
         val density = if (tier == Tier.LITE) liteDensity else fullDensity
-        val targetPts = (radius * radius * 0.26f * density).toInt().coerceIn(1500, 42000)
-        val rows = max(24, sqrt(targetPts.toFloat() / 3.0f).toInt())
-        val cols = max(24, targetPts / rows)
+        // Roughly one point per pixel of the ball's disc. Measured on a Nokia
+        // T20: at the old 0.26 coefficient the ball had 8,480 points over
+        // 102,467 px^2 -- about 3.5 px between neighbours -- and only 0.74% of
+        // pixels were lit. It rendered as a dotted outline, not a ball.
+        //
+        // The desktop uses ~36,230 points across a much larger window, which is
+        // what its density constant was tuned against; copying that number here
+        // on a 420 px ball is far too sparse.
+        val disc = 3.1416f * radius * radius
+        val targetPts = (disc * 0.62f * density).toInt().coerceIn(2000, 120000)
+        val rows = max(28, sqrt(targetPts.toFloat() / 3.0f).toInt())
+        val cols = max(28, targetPts / rows)
         return grid(rows, cols)
     }
 
@@ -201,6 +222,16 @@ class NcsSphere(private val fullDensity: Float = 1.00f,
     private var scratchHits = IntArray(0)
 
     companion object {
+        /**
+         * Baseline amplitude when nothing is playing.
+         *
+         * Without it the ball is a ghost at rest -- verified on a Nokia T20,
+         * where it showed as a barely-visible dotted outline instead of a
+         * sphere. The desktop's ball keeps its shape when paused because it
+         * comes from a wave field (ncs_sphere.py:360-383); this is the same
+         * idea expressed as a floor under the audio term.
+         */
+        const val IDLE_FLOOR = 0.34f
         fun clamp255(v: Float): Int = max(0f, min(255f, v)).toInt()
         fun to255(f: Float): Int = max(0f, min(1f, f)).toInt() * 255
     }
