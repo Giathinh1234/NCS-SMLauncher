@@ -62,7 +62,15 @@ fun PlayerScreen(
     // load library + rescan when a torrent finishes
     fun refresh() {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            tracks = LibraryScanner.scan(context)
+            // scan() handles its own provider failures, but a launch on IO with
+            // no other guard means anything unexpected here is uncaught and
+            // takes the process with it. An empty library is recoverable; a
+            // crash on launch is not.
+            try {
+                tracks = LibraryScanner.scan(context)
+            } catch (t: Exception) {
+                tracks = emptyList()
+            }
         }
     }
 

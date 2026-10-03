@@ -344,6 +344,34 @@ check("fun readStrm" not in vid and ".strm\"" not in vid,
 check("UNSUPPORTED_NOTE" in vid,
       "the limit is stated rather than silently failing on some files")
 
+# Found by static review of code that had never run on a device. DATA is
+# deprecated in API 29 and the provider may omit it, which turns
+# getColumnIndexOrThrow into an uncaught IllegalArgumentException on the IO
+# dispatcher -- a crash on launch rather than an empty library.
+print("\n  the library scan cannot crash the app")
+check("MediaStore.Audio.Media.DATA" not in scanner,
+      "DATA is not projected",
+      "deprecated in API 29; the provider may omit it and "
+      "getColumnIndexOrThrow then throws from an unguarded IO coroutine")
+# Strip comments first. Two earlier checks in this file were satisfied by the
+# very text explaining them, which is a trap worth encoding once here.
+code = "\n".join(l.split("//")[0] for l in scanner.splitlines())
+check("getColumnIndexOrThrow" not in code,
+      "no getColumnIndexOrThrow in the scan's code",
+      "one column the provider declines to return should cost one field, "
+      "not the entire library. Comments are stripped first: an earlier "
+      "version of this check matched the comment that explains the rule.")
+check("getColumnIndex(" in code,
+      "columns are looked up leniently")
+check("SecurityException" in scanner,
+      "a revoked permission yields an empty library, not a crash")
+check("if (iId < 0) return" in scanner,
+      "a missing _ID bails out cleanly",
+      "_ID is the only column the scan cannot proceed without")
+check("catch (t: Exception)" in player,
+      "refresh() guards the scan it launches",
+      "an uncaught throw on Dispatchers.IO takes the whole process down")
+
 print("\n  lite refuses loudly rather than appearing to succeed")
 # The stub's message must reach a Text, not merely sit in a StateFlow.
 check("tMessage" in player, "PlayerScreen collects the torrent message")
