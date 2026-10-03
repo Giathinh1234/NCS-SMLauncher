@@ -69,9 +69,24 @@ unknown sources.
 The lite APK is labelled "HashPlay Lite" on the home screen so the two icons
 are tellable apart at a glance.
 
-**Not verified:** neither APK has been run on a physical device or an emulator.
-They build, sign, and are shaped and labelled correctly, but "it installs and
-plays audio" has not been demonstrated. Treat the first install as a test.
+**Verified on real hardware.** Both APKs were installed and driven on a
+Nokia T20 (Android 13, API 33, arm64), connected over wireless adb:
+
+  * `HashPlay-lite` installs, launches, renders, and survives. Tapping
+    `+ torrent` opens the sheet; pasting a magnet and pressing Download
+    shows, verbatim, `Torents are not in the lite build -- use the full APK
+    for that.`, and `LIBRARY (0)` correctly stays empty.
+  * `HashPlay-full` installs, launches and survives, and loads its native
+    engine on demand -- logcat shows `nativeloader: Load .../lib/arm64-v8a/
+    libtorrent4j.so` after a magnet is submitted.
+  * The two coexist on one device: `com.giathinh.hashplay` and
+    `com.giathinh.hashplay.lite` are both installed at once.
+  * Empty crash buffers throughout. Landscape layout is correct on a
+    1200x2000 tablet.
+
+**Still not verified: audio.** No track was confirmed to play. The magnet
+above is a test hash with no peers, so no download was completed and no
+file was streamed.
 
 ## Playing a file that will not decode no longer kills the app
 
