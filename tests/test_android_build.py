@@ -118,6 +118,34 @@ for symbol in ("class TorrentManager", "data class Status", "val statuses",
           f"both TorrentManagers expose {symbol!r}",
           f"lite={in_lite} full={in_real}")
 
+# ---------------------------------------------------------------------
+# Lite must REFUSE loudly. Verified on an emulator, not assumed.
+#
+# On the emulator the lite APK installed, launched, rendered and stayed
+# alive -- but the "+ torrent" path could NOT be exercised: a headless
+# emulator exposes no touch digitizer (no input device advertises
+# ABS_MT_POSITION_X, so `input tap` injects events nothing consumes, silently).
+# Keyboard events still work; touch does not. So the refusal path is checked
+# against the source here instead of being claimed as device-verified.
+print("\n  lite refuses loudly rather than appearing to succeed")
+player = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                          "hashplay", "PlayerScreen.kt"))
+# The stub's message must reach a Text, not merely sit in a StateFlow.
+check("tMessage" in player, "PlayerScreen collects the torrent message")
+check(re.search(r"tMessage\?\.let", player) is not None,
+      "PlayerScreen RENDERS the torrent message",
+      "a message that is set but never drawn is a silent no-op")
+check("startsWith" in player,
+      "the message is consumed (a completion check refreshes the library)")
+# The stub must actually publish something, not just return false.
+check(re.search(r"_messages\.value\s*=", lite_stub) is not None,
+      "the lite stub publishes a message on start()")
+check(re.search(r"fun start\([^)]*\)\s*:\s*Boolean", lite_stub) is not None,
+      "the lite stub returns a Boolean like the real one")
+# Known gap, recorded rather than glossed over: the sheet closes
+# unconditionally after start(), so on lite the refusal only becomes visible
+# after the user comes back to the screen. Not fixed here.
+
 print("\n  R8 cannot strip what only the manifest references")
 check("-keep class com.giathinh.hashplay.PlaybackService" in read(PROGUARD),
       "PlaybackService is kept (it is manifest-only, so R8 cannot see it)")
