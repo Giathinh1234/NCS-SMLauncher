@@ -149,18 +149,36 @@ jobs:
           # against 17, and compose + R8 both warn on newer toolchains.
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-        # setup-android already runs `sdkmanager --licenses` for us, with
-        # accept-android-sdk-licenses: true. This step used to run --licenses
-        # and then `sdkmanager "platforms;android-34" "build-tools;34.0.0"` --
-        # and the first run of rc.5 failed on `sdkmanager tools` returning
-        # "Failed to find package 'tools'", a package that no longer exists in
-        # modern command-line-tools. Only the platform and build-tools are
-        # asked for here, and a missing one fails the build on its own.
+      # NOT android-actions/setup-android@v3.
 
-      - name: Install the SDK packages this app needs
+      # That action is what has been failing, and not because of anything in
+      # this repo. On the runner image in use (ubuntu-24.04, 20260927.320.1)
+      # it finds a preinstalled sdkmanager 12.0, downloads 16.0, and then
+      # runs `sdkmanager tools` as part of its own setup:
+      #
+      #   [command].../cmdline-tools/16.0/bin/sdkmanager tools
+      #   Warning: Failed to find package 'tools'
+      #   Error: The process '.../sdkmanager' failed with exit code 1
+      #
+      # 'tools' is not a package modern command-line-tools ship, so the action
+      # cannot succeed on this image. Two rc.5 runs failed here identically.
+      #
+      # The runner image already has the SDK, a JDK and licences accepted, so
+      # nothing is needed from the action at all. sdkmanager is on PATH.
+      - name: Show what the runner already provides
         run: |
           set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}" || true
+          sdkmanager --version || true
+
+      - name: Install the SDK packages this app needs
+        # setup-android normally accepts the licences for us. Without it that
+        # is done here instead -- `yes |` rather than `|| true`, because a
+        # silently unaccepted licence only fails much later and less clearly.
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Cache Gradle

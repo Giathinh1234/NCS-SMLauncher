@@ -130,7 +130,15 @@ check("isMinifyEnabled = true" in gradle, "R8 is on for release")
 print("\n  CI builds and ships both")
 check("name: Android (APK)" in workflow, "there is an android CI job")
 check("build_android_apks.sh both" in workflow, "CI builds both flavors")
-check("android-actions/setup-android" in workflow, "CI installs the Android SDK")
+# android-actions/setup-android@v3 is deliberately NOT used: on the current
+# runner image it runs `sdkmanager tools`, which no longer exists, and fails
+# before any of this repo's steps. Two rc.5 runs died there identically.
+_steps = workflow[workflow.find("  android:"):workflow.find("\n  release:")]
+check("uses: android-actions" not in _steps,
+      "CI does not use the setup-android action (it runs 'sdkmanager tools')")
+check("sdkmanager" in workflow, "CI installs the SDK packages with sdkmanager")
+check("platforms;android-34" in workflow and "build-tools;34.0.0" in workflow,
+      "CI installs the exact platform and build-tools the app compiles against")
 check("secrets.HASHPLAY_KEYSTORE_B64" in workflow, "CI gets the key from a secret")
 check("jniLibs" in workflow or "libtorrent4j" in workflow,
       "CI asserts the lite APK really lost the engine")
