@@ -162,23 +162,52 @@ jobs:
       # That is why the action is normally used -- but it also means the SDK is
       # already here and only the two packages we need may be missing.
       #
-      # So: find sdkmanager wherever the image put it, and report what the
-      # image actually provides before changing anything.
-      - name: Locate the SDK tooling the image ships
+      # So: use whichever sdkmanager the image ships, and upgrade it only if it
+      # is too old to read the current package repository.
+      #
+      # The image's sdkmanager is 12.0 and that is the version that ultimately
+      # broke setup-android: 12.0's repository index cannot see modern packages,
+      # so it reports 'Failed to find package tools' and exits 1. Pinning to 16.0
+      # is what the action was trying to do, and is what makes it work.
+      - name: Prepare the SDK command-line tools
         run: |
           set -euo pipefail
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$SDK"
-          # Newest first, so 16.0 wins over the stale 12.0.
+
           SDKMANAGER=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::no sdkmanager under $SDK/cmdline-tools/*/bin"
-            exit 1
+          echo "found sdkmanager: ${SDKMANAGER:-none}"
+          MAJOR=0
+          if [ -n "$SDKMANAGER" ] && "$SDKMANAGER" --version >/dev/null 2>&1; then
+            MAJOR=$("$SDKMANAGER" --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+            MAJOR=${MAJOR:-0}
           fi
-          echo "sdkmanager=$SDKMANAGER"
-          chmod +x "$SDKMANAGER"
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "PATH=$SDKMANAGER:$(dirname "$SDKMANAGER"):$PATH" >> "$GITHUB_ENV"
+          echo "sdkmanager major version: $MAJOR"
+
+          if [ "$MAJOR" -lt 13 ]; then
+            echo "  too old to read the modern repository, installing the current one"
+            # Downloaded and unpacked by hand rather than via 'sdkmanager --install'
+            # on the old binary, which cannot resolve the package. Verified: this
+            # URL is the newest commandlinetools entry in Google's own
+            # repository2-1.xml, it returns HTTP 200, and its zip unpacks to
+            # cmdline-tools/{bin,lib,source.properties} -- the layout the next
+            # lines depend on.
+            CT_URL="https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip"
+            TMP=$(mktemp -d)
+            curl -fsSL -o "$TMP/tools.zip" "$CT_URL"
+            unzip -q "$TMP/tools.zip" -d "$TMP/out"
+            # The zip's top-level cmdline-tools/ must itself become <version>/,
+            # or sdkmanager exits with "no sdkmanager found".
+            mkdir -p "$SDK/cmdline-tools/16.0"
+            mv "$TMP/out/cmdline-tools"/* "$SDK/cmdline-tools/16.0/"
+            rm -rf "$TMP"
+            SDKMANAGER="$SDK/cmdline-tools/16.0/bin/sdkmanager"
+          fi
+
+          chmod +x "$SDKMANAGER" 2>/dev/null || true
+          echo "using sdkmanager: $SDKMANAGER"
+          echo "sdkmanager=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "PATH=$(dirname "$SDKMANAGER"):$PATH" >> "$GITHUB_ENV"
           "$SDKMANAGER" --version || true
           echo "--- platforms present ---"
           ls "$SDK/platforms" 2>/dev/null || echo "  (none)"
