@@ -40,7 +40,14 @@ if [ "$MODE" = "debug" ]; then
   ./gradlew --console=plain \
     $([ "$FLAVOR" = both ] && echo "assembleFullDebug assembleLiteDebug" || \
       { [ "$FLAVOR" = full ] && echo assembleFullDebug || echo assembleLiteDebug; }) \
-    2>&1 | grep -viE "^Download|SDK processing" || true
+    2>&1 | grep -viE "^Download|SDK processing"
+  DEBUG_RC=$?
+  # Same trap as the release path below: `|| true` here let a Kotlin compile
+  # error exit 0 and the script went on as if the build had worked.
+  if [ "$DEBUG_RC" -ne 0 ]; then
+    echo "  BUILD FAILED (gradle exit $DEBUG_RC)."
+    exit "$DEBUG_RC"
+  fi
   exit 0
 fi
 
@@ -123,7 +130,18 @@ echo "  building: $TASKS"
   -PstorePass="$KS_PASS" \
   -PkeyPass="$KEY_PASS" \
   -PkeyAlias="$KEY_ALIAS" \
-  2>&1 | grep -viE "^Download|SDK processing" || true
+  2>&1 | grep -viE "^Download|SDK processing"
+GRADLE_RC=$?
+
+# This used to end in `|| true`, which swallowed Gradle's exit status. A Kotlin
+# compile error then still produced a signed APK out of a stale build/
+# directory, and I measured and reported on a renderer that had never compiled.
+# Twice. Gradle's exit code has to propagate.
+if [ "$GRADLE_RC" -ne 0 ]; then
+  echo
+  echo "  BUILD FAILED (gradle exit $GRADLE_RC) -- refusing to ship a stale APK."
+  exit 1
+fi
 
 # --- verify what came out --------------------------------------------------
 echo

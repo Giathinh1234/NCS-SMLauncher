@@ -7,7 +7,7 @@ sys.path.insert(0, "/Users/giathinh/ncs-music-launcher/src")
 
 import numpy as np
 import pygame
-import ncs_launcher as nl
+import ncs_sphere as nl
 
 pygame.init()
 W, H = 900, 900

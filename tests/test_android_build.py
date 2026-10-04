@@ -493,6 +493,64 @@ check("apksigner" in bs,
       "signing is checked with apksigner, not by listing META-INF (v2/v3 signing "
       "stores no .RSA file, so a zip listing reports valid APKs as unsigned)")
 
+print("\n  the NCS sphere is not silently rendering black")
+ncs = read(os.path.join(ANDROID_SRC, "main", "java", "com", "giathinh",
+                        "hashplay", "NcsSphere.kt"))
+# to255 truncated the 0..1 value BEFORE multiplying by 255, so every value
+# below 1.0 became 0 and the only reachable outputs were 0 and 255. Every
+# channel came out 0, `out` stayed 0xFF000000 -- the same value as the
+# background fill -- and the ball rendered pure black even though deposits
+# were provably landing. Found by logging, after hours of misattributing it
+# to density, shading and normalisation.
+m = re.search(r"^\s*fun to255\(f: Float\): Int = (.+)$", ncs, re.M)
+check(m is not None, "to255 could not be found in NcsSphere.kt")
+if m:
+    body = m.group(1)
+    check(").toInt() * 255" not in body,
+          "to255 truncates before scaling, so anything under 1.0 renders 0 "
+          "-- this is what made the whole ball black")
+    check("* 255" in body,
+          "to255 no longer scales to the 0..255 range at all")
+    check(body.index("* 255") < body.index(".toInt()"),
+          "to255 must multiply by 255 and only then truncate, not the reverse")
+# The reused accumulators must be refilled every frame. They were not, so
+# deposits piled up frame over frame (41 million after a few seconds, ~657
+# per point when the real maximum is 10) and norm collapsed toward zero.
+check("java.util.Arrays.fill(acc, 0f)" in ncs,
+      "scratch acc is reused across frames but never cleared, so deposits "
+      "accumulate and the ball dims to black")
+check("java.util.Arrays.fill(hits, 0)" in ncs,
+      "scratch hits is reused across frames but never cleared, so the "
+      "density divisor inflates every frame")
+# The ball is drawn through a Canvas, which only re-runs when the state it
+# reads changes. If the draw lambda stops reading the frame tick the ball
+# freezes (or never draws) with no error.
+check("withFrameNanos" in ncs,
+      "the NCS ball has no frame clock, so it never animates")
+
+print("\n  a Kotlin compile failure can no longer ship a stale APK")
+bs2 = read(BUILD_SCRIPT)
+# Check BOTH gradle invocations -- there were two, the release path and the
+# debug path, and only one had been repaired. The bug is specifically a
+# `|| true` that terminates the *gradle* pipeline (same line as the
+# `grep -viE "^Download"` filter), NOT an unrelated defensive `|| true` on a
+# `grep -c` count a few lines later.
+gradle_pipes = [l for l in bs2.splitlines()
+                if 'grep -viE "^Download' in l]
+check(len(gradle_pipes) == 2,
+      "expected two gradle pipelines (debug and release), found %d"
+      % len(gradle_pipes))
+for line in gradle_pipes:
+    check("|| true" not in line,
+          "a gradle pipeline still ends in `|| true`, which swallows the "
+          "exit status -- a failed compile then produces a signed APK from "
+          "a stale build/ directory and every measurement taken from it is "
+          "fake: %s" % line.strip())
+check("GRADLE_RC" in bs2,
+      "the build script does not capture gradle's exit code")
+check("refusing to ship" in bs2,
+      "the build script does not refuse to ship on a non-zero gradle status")
+
 print("\n" + ("ANDROID BUILD TESTS PASSED" if not FAILS
              else "%d FAILURES: %s" % (len(FAILS), FAILS)))
 sys.exit(1 if FAILS else 0)
