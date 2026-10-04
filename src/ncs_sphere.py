@@ -380,7 +380,20 @@ def _sphere_field(la, lo, t, bass, mid, high, dt):
             + 0.08 * np.cos(1.8 * la - 1.2 * lo - 1.3 * t))
 
 
-def draw_ncs_sphere(screen, player, w, h, t):
+def clamp_lean(value):
+    """Coerce a stored lean into -1.0..1.0. Duplicated from config.py on
+    purpose: ncs_sphere is imported standalone by the preview/comparison tools
+    and must not pull in the whole application config."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number or number in (float("inf"), float("-inf")):
+        return 0.0
+    return max(-1.0, min(1.0, number))
+
+
+def draw_ncs_sphere(screen, player, w, h, t, lean_value=0.0):
     """Draw the NCS sphere: dark gold dot texture under a flowing gold membrane.
 
     Animated and audio-reactive. The sphere pulses with the bass, ripples on
@@ -402,7 +415,30 @@ def draw_ncs_sphere(screen, player, w, h, t):
     pts = geo["base"]
     la, lo = geo["lat"], geo["lon"]
 
-    cx, cy = rw // 2, rh // 2
+    # Horizontal lean. The sphere is a square object in a wide window, so a
+    # dead-centred one leaves dead space on both sides. `lean` shifts its
+    # centre by a FRACTION OF THE SPHERE'S OWN RADIUS, so the ball never
+    # overlaps the value it is leaning toward: at lean=1 the centre sits one
+    # radius right of middle, which is exactly flush against the right edge.
+    #
+    # Clamped so a hand-edited settings.json cannot push cx outside the
+    # internal buffer (numpy would silently write out of bounds, or the
+    # projection would flip and the sphere would render inside-out).
+    cx = rw // 2
+    cy = rh // 2
+    lean = clamp_lean(lean_value)
+    if lean:
+        # Use the sphere's REAL radius (_R_BASE/_R_SWING), not half the window.
+        # At lean=1 the centre lands exactly where the ball is flush against an
+        # edge and nowhere further, so it can never be clipped in half --
+        # clamping against min(rw,rh)/2 instead left ~12 px of the ball hanging
+        # off the left and right sides at full lean.
+        #
+        # The peak radius is used (bass=1) so a loud moment cannot push the
+        # already-leaned ball past the edge it was placed against.
+        ball_r = min(rw, rh) * _R_BASE
+        travel = max(0.0, (rw / 2.0) - ball_r)
+        cx = int(round(rw / 2.0 + lean * travel))
 
     # --- smoothed audio bands ---
     raw_bass, raw_mid, raw_high = _bands(mag)

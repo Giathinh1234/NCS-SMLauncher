@@ -661,7 +661,7 @@ def drop_render_caches():
 
 
 def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
-                    video_slot=None):
+                    video_slot=None, lean=0.0):
     cx, cy = w // 2, h // 2
     # Reused across frames and modes now. The caller must be sure the surface
     # is fully overwritten each frame, which the branches below do: either
@@ -693,7 +693,7 @@ def draw_visualizer(screen, player, w, h, mode, t, current_track_metadata,
 
     if mode == "radial":
         # The real NCS ball: 3D point-cloud sphere with a flowing gold membrane
-        _draw_ncs_sphere(screen, player, w, h, t)
+        _draw_ncs_sphere(screen, player, w, h, t, lean_value=lean)
     elif mode == "disc":
         # --- Rotating Vinyl Disc Visualizer ---
         disc_radius = int(min(w, h) * 0.28)
@@ -2060,7 +2060,8 @@ def main():
                     if verdict == "close":
                         settings_open = False
                         save_settings()
-                    elif verdict in ("rebind", "toggled", "changed"):
+                    elif verdict in ("rebind", "toggled", "changed",
+                                   "adjusted"):
                         save_settings()
                     settings_open = settings_panel.is_open()
                     continue
@@ -2404,7 +2405,8 @@ def main():
         if modes[vis_mode_idx] == "video" and tracks:
             video_slot.follow_track(tracks[selected]['path'])
         draw_visualizer(screen, player, w, h, modes[vis_mode_idx], t,
-                        current_metadata, video_slot=video_slot)
+                        current_metadata, video_slot=video_slot,
+                        lean=cfg.get("visualizer_lean", 0.0))
 
         # Draw UI
         draw_ui(screen, font, font_big, tracks, selected, player, w, h, muted,

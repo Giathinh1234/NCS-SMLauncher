@@ -122,19 +122,27 @@ class Row:
     `kind` decides what Enter does:
         "action"  arm a key capture and rebind an ACTIONS entry
         "toggle"  flip a boolean in cfg
+        "slider"  adjust a float in cfg with Left/Right
         "command" run a callback
         "info"    read-only text, not selectable
     """
 
     def __init__(self, label, kind, action=None, value=None, callback=None,
-                 help_text="", key=None):
+                 help_text="", key=None, minimum=None, maximum=None,
+                 step=0.05, format_string="{:.2f}"):
         self.label = label
         self.kind = kind
         self.action = action
         self.value = value
         self.callback = callback
         self.help_text = help_text
-        self.key = key            # cfg key, for "toggle" rows
+        self.key = key            # cfg key, for "toggle" and "slider" rows
+        # Slider bounds live on the row rather than being inferred from the
+        # value, so 0.0 is a legal middle setting and not "unset".
+        self.minimum = minimum
+        self.maximum = maximum
+        self.step = step
+        self.format_string = format_string
 
     def __repr__(self):
         return "<Row %s %r>" % (self.kind, self.label or self.value)
@@ -250,6 +258,18 @@ class SettingsPanel:
         ]
         if self._bool_keys():
             rows.append(Row("", "info", value="── display ──"))
+
+        # Lean comes before the display toggles: it changes what the user is
+        # looking at, so it is the thing they most likely reached for, and
+        # unlike a boolean it needs no Enter press -- Left/Right do it live.
+        rows.append(Row("Lean visualizer", "slider",
+                        key="visualizer_lean",
+                        value=config.clamp_lean(
+                            self.cfg.get("visualizer_lean", 0.0)),
+                        minimum=config.LEAN_MIN, maximum=config.LEAN_MAX,
+                        step=0.05, format_string="{:+.2f}",
+                        help_text="Left/Right \u00b7 \u2190 full left, 0 centre, "
+                                  "\u2192 full right"))
         for key in self._bool_keys():
             rows.append(Row(BOOL_LABELS.get(key, _humanize(key)), "toggle",
                             key=key,
@@ -420,9 +440,45 @@ class SettingsPanel:
             self.select(0)
         elif key == pygame.K_END:
             self.select(len(self.items) - 1)
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT):
+            return self._adjust(-1 if key == pygame.K_LEFT else 1)
         elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             return self._activate()
         return None
+
+    def _adjust(self, direction):
+        """Move the selected slider one step. Returns "adjusted" or None.
+
+        Consumes the key ONLY for a slider row. A toggle or command row leaves
+        Left/Right alone, because those keys are still the player's seek
+        bindings and the panel must not eat them.
+        """
+        row = self.current_row()
+        if row is None or row.kind != "slider":
+            return None
+        try:
+            current = float(self.cfg.get(row.key, 0.0))
+        except (TypeError, ValueError):
+            current = 0.0
+        if row.minimum is not None:
+            current = max(row.minimum, current)
+        if row.maximum is not None:
+            current = min(row.maximum, current)
+        updated = current + row.step * direction
+        # Clamp AFTER stepping, so holding Right parks on the maximum exactly
+        # instead of overshooting by a fraction every frame.
+        if row.minimum is not None:
+            updated = max(row.minimum, updated)
+        if row.maximum is not None:
+            updated = min(row.maximum, updated)
+        # Snap to the step grid so repeated presses cannot accumulate float
+        # drift (0.05 * 3 is 0.15000000000000002, which would print as noise).
+        updated = round(updated, 4)
+        self.cfg[row.key] = updated
+        row.value = updated
+        # No dirty flag: the panel already reports changes through its return
+        # value, and the launcher persists from that.
+        return "adjusted"
 
     def _capture(self, key):
         """Swallow the next real keypress and make it the new binding."""
@@ -563,9 +619,38 @@ class SettingsPanel:
             return human_key_name(row.value) if row.value else "-"
         if row.kind == "toggle":
             return "ON" if row.value else "OFF"
+        if row.kind == "slider":
+            return "%s %s" % (self._slider_bar(row), self._slider_num(row))
         if row.kind == "command":
             return ""
         return str(row.value or "")
+
+    @staticmethod
+    def _slider_num(row):
+        try:
+            return row.format_string.format(float(row.value or 0.0))
+        except (TypeError, ValueError):
+            return row.format_string.format(0.0)
+
+    @staticmethod
+    def _slider_bar(row, cells=10):
+        """A 10-cell bar showing where the value sits between its bounds.
+
+        Unicode blocks rather than ascii so it is legible in the default font.
+        The centre cell is the zero position, which is what makes it obvious
+        at a glance whether the ball is left, right, or centred.
+        """
+        try:
+            value = float(row.value or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        low = row.minimum if row.minimum is not None else 0.0
+        high = row.maximum if row.maximum is not None else 1.0
+        span = (high - low) or 1.0
+        fraction = max(0.0, min(1.0, (value - low) / span))
+        filled = int(round(fraction * cells))
+        filled = max(1, min(cells, filled))
+        return "\u2501" * filled + "\u2508" * (cells - filled)
 
     def _value_text(self, row, capturing=False, selected=False):
         """The value-column text for a row, as drawn in this state.

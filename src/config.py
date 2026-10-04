@@ -101,7 +101,41 @@ DEFAULT_CONFIG = {
     # flag was silently lost in the frozen binary. This stays a config key so
     # a settings.json can still flip it, but a lite BUILD has it pinned true.
     "lite": BUILD_LITE,
+
+    # Horizontal lean of the visualizer, as a fraction of the free space:
+    # -1.0 hard left, 0.0 centred, +1.0 hard right.
+    #
+    # The ball is a square object in a wide window, so a dead-centred one leaves
+    # a lot of empty space on both sides and reads as small. Leaning it lets the
+    # sphere sit against one edge and leaves the other side free for the UI.
+    #
+    # This is a FRACTION, not a pixel count, so it means the same thing at any
+    # window size and survives a resize without drifting. It is clamped on load
+    # (see clamp_lean) so a hand-edited settings file cannot push the ball
+    # off-screen.
+    "visualizer_lean": 0.0,
 }
+
+# The lean range, mirrored by the settings slider.
+LEAN_MIN = -1.0
+LEAN_MAX = 1.0
+
+
+def clamp_lean(value):
+    """Coerce any stored value into a usable lean fraction.
+
+    A settings.json is hand-editable and survives upgrades, so this can be
+    handed anything: a string, None, NaN, 47. The visualizer multiplies the
+    window width by it and offsets the ball's centre, so an out-of-range value
+    would throw or shove the sphere into another window.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number or number in (float("inf"), float("-inf")):
+        return 0.0          # NaN and infinities are not lean positions
+    return max(LEAN_MIN, min(LEAN_MAX, number))
 
 
 def default_config():
