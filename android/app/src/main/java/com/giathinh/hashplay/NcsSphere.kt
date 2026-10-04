@@ -182,11 +182,19 @@ class NcsSphere(private val fullDensity: Float = 1.00f,
      */
     internal fun render(width: Int, height: Int, mags: FloatArray,
                bass: Float, level: Float, t: Float, tier: Tier, out: IntArray,
-               pts: List<P>) {
+               pts: List<P>, lean: Float = 0f) {
         if (width <= 0 || height <= 0) return
-        val cx = width / 2f
-        val cy = height / 2f
         val radius = ballRadius(width, height)
+        // Horizontal lean, ported from the desktop's visualizer_lean setting.
+        // The ball moves by a FRACTION of the available travel, where "full"
+        // is the point where the sphere is flush against an edge and no
+        // further -- so it can never be clipped, which is what happened when
+        // the desktop first clamped against half the window instead of the
+        // real radius.
+        val safeLean = lean.coerceIn(-1f, 1f)
+        val travel = (width / 2f - radius).coerceAtLeast(0f)
+        val cx = width / 2f + safeLean * travel
+        val cy = height / 2f
 
         java.util.Arrays.fill(out, 0xFF000000.toInt())
 
@@ -514,7 +522,9 @@ class NcsSphere(private val fullDensity: Float = 1.00f,
  */
 @Composable
 fun NcsSphereView(mags: FloatArray, bass: Float, level: Float,
-                  tier: NcsSphere.Tier, modifier: Modifier = Modifier.fillMaxSize()) {
+                  tier: NcsSphere.Tier,
+                  modifier: Modifier = Modifier.fillMaxSize(),
+                  lean: Float = 0f) {
     val sphere = remember { NcsSphere() }
     var size by remember { mutableStateOf(IntSize.Zero) }
     // One mutable bitmap per size, reused every frame. The ANDROID Bitmap is
@@ -555,7 +565,8 @@ fun NcsSphereView(mags: FloatArray, bass: Float, level: Float,
 
     val img = bmp
     if (size.width > 0 && !grid.isEmpty() && !buf.isEmpty() && img != null) {
-        sphere.render(size.width, size.height, mags, bass, level, t, tier, buf, grid)
+        sphere.render(size.width, size.height, mags, bass, level, t, tier,
+                      buf, grid, lean)
         // setPixels writes into the SAME allocation, so nothing is reallocated
         // per frame.
         img.setPixels(buf, 0, size.width, 0, 0, size.width, size.height)

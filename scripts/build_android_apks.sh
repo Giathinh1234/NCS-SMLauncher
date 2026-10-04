@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build both Android APKs (full + lite), signed for release.
+# Build the Android APKs (full + lite + ncs), signed for release.
 #
 # The keystore is never in the repo. This script looks for one in this order:
 #
@@ -25,6 +25,16 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO/android"
 
 FLAVOR="${1:-both}"
+
+# Debug task list, computed plainly. A nested `case` inside `$(...)` is what
+# broke `sh -n` when this flavor was added, so it stays a simple if-chain.
+DEBUG_TASKS="assembleFullDebug"
+case "$FLAVOR" in
+  lite) DEBUG_TASKS="assembleLiteDebug" ;;
+  ncs)  DEBUG_TASKS="assembleNcsDebug" ;;
+  both) DEBUG_TASKS="assembleFullDebug assembleLiteDebug" ;;
+  all)  DEBUG_TASKS="assembleFullDebug assembleLiteDebug assembleNcsDebug" ;;
+esac
 MODE="${2:-release}"
 
 die() { printf '  error: %s\n' "$1" >&2; exit 1; }
@@ -38,8 +48,7 @@ KEY_ALIAS="${HASHPLAY_KEY_ALIAS:-}"
 if [ "$MODE" = "debug" ]; then
   echo "  debug build: no keystore needed (APG signs with the debug key)"
   ./gradlew --console=plain \
-    $([ "$FLAVOR" = both ] && echo "assembleFullDebug assembleLiteDebug" || \
-      { [ "$FLAVOR" = full ] && echo assembleFullDebug || echo assembleLiteDebug; }) \
+    $DEBUG_TASKS \
     2>&1 | grep -viE "^Download|SDK processing"
   DEBUG_RC=$?
   # Same trap as the release path below: `|| true` here let a Kotlin compile
@@ -120,8 +129,10 @@ case "$FLAVOR" in
   # when a single flavor is requested -- so `both` kept working and hid it.
   full)     TASKS="assembleFullRelease" ;;
   lite)     TASKS="assembleLiteRelease" ;;
+  ncs)      TASKS="assembleNcsRelease" ;;
   both)     TASKS="assembleFullRelease assembleLiteRelease" ;;
-  *)        die "flavor must be full, lite or both (got '$FLAVOR')" ;;
+  all)      TASKS="assembleFullRelease assembleLiteRelease assembleNcsRelease" ;;
+  *)        die "flavor must be full, lite, ncs, both or all (got '$FLAVOR')" ;;
 esac
 
 echo "  building: $TASKS"
@@ -147,8 +158,9 @@ fi
 echo
 echo "  APKs:"
 FAILED=0
-for v in full lite; do
-  [ "$FLAVOR" != both ] && [ "$FLAVOR" != "$v" ] && continue
+# `all` builds every flavor; `both` means full+lite, the historical default.
+for v in full lite ncs; do
+  [ "$FLAVOR" != both ] && [ "$FLAVOR" != all ] && [ "$FLAVOR" != "$v" ] && continue
   APK=$(find "app/build/outputs/apk/$v/release" -name "*.apk" 2>/dev/null | head -1)
   if [ -z "$APK" ]; then
     echo "    $v: MISSING — build did not produce it"
@@ -160,9 +172,32 @@ for v in full lite; do
   case "$v" in
     full) WANT=present ;;
     lite) WANT=absent  ;;
+    # ncs is the desktop-full equivalent: it carries the torrent engine like
+    # `full`, and differs from it in UI and applicationId instead.
+    ncs)  WANT=present ;;
+    *)    WANT=present ;;
   esac
+  # Each flavor must be a genuinely separate app, or "three versions on one
+  # device" silently degrades into one app installed three times over.
+  AAPT=$(ls "$(sed -n 's/^sdk\.dir=//p' "$REPO/android/local.properties" 2>/dev/null)"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
+  PKG=""
+  if [ -n "$AAPT" ]; then
+    # Capture just the quoted name. aapt emits
+    #   package: name='com.x' versionCode=... versionName=...
+    # so the name has to be delimited by the quotes, not by whitespace, or the
+    # whole line comes back. Double-quoted to keep the single quotes out of the
+    # shell's quoting rules -- an escaped quote in cut's argument broke `sh -n`.
+    PKG=$("$AAPT" dump badging "$APK" 2>/dev/null \
+          | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
+  fi
+  WANT_PKG="com.giathinh.hashplay"
+  [ "$v" = lite ] && WANT_PKG="com.giathinh.hashplay.lite"
+  [ "$v" = ncs ]  && WANT_PKG="com.giathinh.hashplay.ncs"
   GOT=$([ "$ENGINE" = "0" ] && echo absent || echo present)
   if [ "$GOT" = "$WANT" ]; then MARK="ok "; else MARK="BAD"; FAILED=1; fi
+  if [ -n "$PKG" ] && [ "$PKG" != "$WANT_PKG" ]; then MARK="BAD"; FAILED=1
+    echo "    expected package $WANT_PKG but the APK declares $PKG"
+  fi
   # Signed? Ask apksigner, not the archive listing. Modern signing (v2/v3)
   # stores the signature in the APK Signing Block rather than as META-INF/*.RSA
   # files, so a zip listing reports "unsigned" for a perfectly valid APK --

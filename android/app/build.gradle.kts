@@ -110,12 +110,46 @@ android {
         create("full") {
             dimension = "size"
             buildConfigField("boolean", "HAS_TORRENTS", "true")
+            buildConfigField("boolean", "NCS_UI", "false")
         }
         create("lite") {
             dimension = "size"
             applicationIdSuffix = ".lite"
             versionNameSuffix = "-lite"
             buildConfigField("boolean", "HAS_TORRENTS", "false")
+            buildConfigField("boolean", "NCS_UI", "false")
+        }
+
+        // A THIRD build: a from-scratch Android player written to carry over
+        // as much of the desktop app as the platform allows.
+        //
+        // Its own applicationId so all three sit on one device at once. That is
+        // the whole point -- comparing it against the existing full build means
+        // running both, and asking someone to uninstall one to try the other is
+        // how nobody tries either.
+        //
+        // It keeps the torrent engine (HAS_TORRENTS true) because on desktop
+        // the full build is the one with libtorrent, and this build is the
+        // desktop-full equivalent, not the lite one.
+        //
+        // NCS_UI selects the from-scratch player screen instead of the original.
+        create("ncs") {
+            dimension = "size"
+            applicationIdSuffix = ".ncs"
+            versionNameSuffix = "-ncs"
+            buildConfigField("boolean", "HAS_TORRENTS", "true")
+            buildConfigField("boolean", "NCS_UI", "true")
+        }
+    }
+
+    // The ncs flavor has its own UI but reuses the FULL engine: it sets
+    // HAS_TORRENTS true, so it must get the real TorrentManager and
+    // VideoBackground. A flavor only sees its own source directory by default,
+    // so point it at full's rather than keeping a third copy of the engine --
+    // three copies is three places for the flavor separation to drift.
+    sourceSets {
+        getByName("ncs") {
+            java.srcDir("src/full/java")
         }
     }
 

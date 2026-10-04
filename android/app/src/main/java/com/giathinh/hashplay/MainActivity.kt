@@ -29,20 +29,28 @@ class MainActivity : ComponentActivity() {
                 // play a specific magnet has already chosen to do the thing
                 // and does not need onboarding in the way.
                 var setup by remember { mutableStateOf<SetupState?>(null) }
+
+                // The ncs flavor ships its own player screen. Routed by flag
+                // rather than by flavor-specific source sets, because Android
+                // cannot have two classes of the same name in a variant and
+                // source-set overriding is not something it supports.
+                @androidx.compose.runtime.Composable
+                fun Route(pending: String?, consumed: () -> Unit) {
+                    if (BuildConfig.NCS_UI) {
+                        NcsPlayerScreen(pendingMagnet = pending, onMagnetConsumed = consumed)
+                    } else {
+                        PlayerScreen(pendingMagnet = pending, onMagnetConsumed = consumed)
+                    }
+                }
+
                 if (pendingMagnet != null) {
-                    PlayerScreen(
-                        pendingMagnet = pendingMagnet,
-                        onMagnetConsumed = { pendingMagnet = null }
-                    )
+                    Route(pendingMagnet) { pendingMagnet = null }
                 } else {
                     val s = setup ?: SetupState(this).also { setup = it }
                     if (s.needsSetup()) {
                         SetupScreen(onDone = { setup = SetupState(this).also { it.complete() } })
                     } else {
-                        PlayerScreen(
-                            pendingMagnet = null,
-                            onMagnetConsumed = { pendingMagnet = null }
-                        )
+                        Route(null) { pendingMagnet = null }
                     }
                 }
             }
