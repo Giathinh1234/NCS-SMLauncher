@@ -278,5 +278,74 @@ class SettingsReachableEverywhere(unittest.TestCase):
         self.assertIn("onGain(gain)", self.overlay)
 
 
+
+class PixelTypographyEverywhere(unittest.TestCase):
+    """Every piece of text on every flavor renders in a pixel face.
+
+    Two things can put system type back: a screen that names a font explicitly,
+    and Material's default typography for a screen that names none. Both are
+    pinned here, because a silent fallback is invisible until someone notices
+    one label in the wrong typeface.
+    """
+
+    def setUp(self):
+        self.main = MAIN
+        self.type = (MAIN / "PixelType.kt").read_text()
+        self.theme = (MAIN / "Theme.kt").read_text()
+
+    def test_both_fonts_are_bundled(self):
+        res = ROOT / "android" / "app" / "src" / "main" / "res" / "font"
+        for f in ("silkscreen_regular.ttf", "silkscreen_bold.ttf", "pixelify_sans.ttf"):
+            self.assertTrue((res / f).exists(), f)
+            self.assertGreater((res / f).stat().st_size, 5000, f)
+
+    def test_fonts_are_real_ttf_not_placeholders(self):
+        """A 14-byte '404: Not Found' saved as a .ttf builds and renders nothing."""
+        res = ROOT / "android" / "app" / "src" / "main" / "res" / "font"
+        for f in res.glob("*.ttf"):
+            head = f.read_bytes()[:4]
+            self.assertIn(head, (b"\x00\x01\x00\x00", b"true", b"OTTO"),
+                          "%s is not a real font" % f.name)
+
+    def test_licences_travel_with_the_fonts(self):
+        """SIL OFL requires it, and the res/font dir will not accept .txt."""
+        lic = ROOT / "android" / "licenses"
+        names = {p.name for p in lic.glob("OFL-*LICENSE.txt")}
+        self.assertEqual(len(names), 2, names)
+        for text in lic.glob("OFL-*LICENSE.txt"):
+            self.assertIn("SIL OPEN FONT LICENSE", text.read_text().upper())
+
+    def test_no_screen_asks_for_the_monospace_system_font(self):
+        for kt in self.main.glob("*.kt"):
+            self.assertNotIn("FontFamily.Monospace", kt.read_text(), kt.name)
+
+    def test_material_typography_is_overridden(self):
+        """This is what reaches PlayerScreen and SetupScreen, which name no font."""
+        self.assertIn("typography = PixelTypography", self.theme)
+        self.assertIn("MaterialTheme(", self.theme)
+
+    def test_line_height_is_loosened_for_descenders(self):
+        """Pixel faces clip g/y/p at Material's default leading."""
+        self.assertIn("lineHeight", self.theme)
+
+    def test_two_faces_with_distinct_jobs(self):
+        self.assertIn("val Display", self.type)
+        self.assertIn("val Body", self.type)
+
+    def test_track_titles_keep_their_case(self):
+        """Silkscreen is capitals-only, so a title in it loses its word shapes."""
+        screen = (MAIN / "NcsPlayerScreen.kt").read_text()
+        idx = screen.find("track.title.take(")
+        self.assertGreater(idx, -1)
+        window = screen[idx:idx + 220]
+        self.assertIn("PixelType.Body", window)
+
+    def test_the_wordmark_uses_the_display_face(self):
+        screen = (MAIN / "NcsPlayerScreen.kt").read_text()
+        idx = screen.find('"NCS", color =')
+        self.assertGreater(idx, -1)
+        self.assertIn("PixelType.Display", screen[idx:idx + 200])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

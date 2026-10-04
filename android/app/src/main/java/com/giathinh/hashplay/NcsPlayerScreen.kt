@@ -266,7 +266,7 @@ fun NcsPlayerScreen(
                             if (scanError != null) "library: $scanError"
                             else "no tracks yet · + folder to add one",
                             color = Px6E768C, fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = PixelType.Body,
                         )
                     }
                 } else {
@@ -337,7 +337,7 @@ fun NcsPlayerScreen(
                 Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)
             ) {
                 Text(now.title, color = PxD8DEE9, fontSize = 12.sp,
-                     fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                     fontFamily = PixelType.Display, fontWeight = FontWeight.Bold)
             }
         }
 
@@ -408,7 +408,7 @@ private fun PixelTag(
             .border(1.dp, Px1E2430, RoundedCornerShape(2.dp))
             .padding(horizontal = 6.dp, vertical = 3.dp),
     ) {
-        Text(text, color = PxTEAL, fontSize = fontSize, fontFamily = FontFamily.Monospace)
+        Text(text, color = PxTEAL, fontSize = fontSize, fontFamily = PixelType.Display)
     }
 }
 
@@ -423,13 +423,13 @@ private fun PixelHeader(
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "NCS", color = PxTEAL, fontSize = if (big) 24.sp else 18.sp,
-            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black,
+            "NCS", color = PxTEAL, fontSize = 18.sp,
+            fontFamily = PixelType.Display, fontWeight = FontWeight.Black,
         )
         Spacer(Modifier.width(8.dp))
         Text(
             "player", color = Px6E768C, fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = PixelType.Display,
         )
         Spacer(Modifier.weight(1f))
         PixelTag(if (hasTorrents) "+ torrent" else "lite")
@@ -464,13 +464,13 @@ private fun TrackRow(
     ) {
         Text(
             track.title.take(38), color = if (isSelected) PxGOLD else PxD8DEE9,
-            fontSize = fontSize, fontFamily = FontFamily.Monospace,
+            fontSize = fontSize, fontFamily = PixelType.Body,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
         Text(
             fmt(track.durationMs), color = Px6E768C, fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = PixelType.Body,
         )
     }
 }
@@ -495,7 +495,7 @@ private fun Transport(
         if (now.durationMs > 0) {
             Text(
                 "${fmt(now.positionMs)} / ${fmt(now.durationMs)}",
-                color = Px6E768C, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                color = Px6E768C, fontSize = 10.sp, fontFamily = PixelType.Body,
             )
         }
     }

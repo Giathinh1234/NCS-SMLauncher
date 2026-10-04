@@ -65,7 +65,7 @@ fun SettingsOverlay(
         ) {
             Text(
                 text, color = if (active) teal else Color(0xFFD8DEE9),
-                fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp, fontFamily = PixelType.Display,
             )
         }
     }
@@ -100,7 +100,7 @@ fun SettingsOverlay(
             Text(
                 if (capturing != null) "press a key for $capturing" else "SETTINGS",
                 color = if (capturing != null) Color(0xFFFF5C7A) else teal,
-                fontSize = 14.sp, fontFamily = FontFamily.Monospace,
+                fontSize = 14.sp, fontFamily = PixelType.Display,
                 fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.height(10.dp))
@@ -125,7 +125,7 @@ fun SettingsOverlay(
                         "Compact layout, library stays visible, controls show " +
                             "their keys. Also what a gamepad gets."
                 },
-                color = gold, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                color = gold, fontSize = 10.sp, fontFamily = PixelType.Body,
                 modifier = Modifier.padding(top = 4.dp),
             )
 
@@ -150,13 +150,13 @@ fun SettingsOverlay(
                 Chip("»") { lean = HashSettings.stepLean(lean, 1); HashSettings.setLean(prefs, lean) }
                 Text(
                     "%+.2f".format(lean), color = Color(0xFFFFC64A), fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = PixelType.Body,
                     modifier = Modifier.padding(start = 6.dp).width(44.dp),
                 )
             }
             Text(
                 "−1 hard left · 0 centred · +1 hard right",
-                color = gold, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                color = gold, fontSize = 10.sp, fontFamily = PixelType.Body,
             )
 
             // --- gain -------------------------------------------------------
@@ -185,13 +185,13 @@ fun SettingsOverlay(
                 }
                 Text(
                     "${(gain * 100).toInt()}%", color = teal, fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = PixelType.Body,
                     modifier = Modifier.padding(start = 6.dp).width(44.dp),
                 )
             }
             Text(
                 "Player volume. This is a level, not a promise about audibility.",
-                color = gold, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                color = gold, fontSize = 10.sp, fontFamily = PixelType.Body,
             )
 
             // --- gamepad ----------------------------------------------------
@@ -201,7 +201,7 @@ fun SettingsOverlay(
                 if (pads.isEmpty()) "none connected — plug one in to use it"
                 else "connected: ${pads.joinToString(", ")}",
                 color = if (pads.isEmpty()) gold else teal,
-                fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp, fontFamily = PixelType.Body,
             )
             Spacer(Modifier.height(4.dp))
             for ((action, binding) in Gamepad.DEFAULTS) {
@@ -214,19 +214,19 @@ fun SettingsOverlay(
                 ) {
                     Text(
                         binding.label, color = Color(0xFFD8DEE9), fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = PixelType.Body,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
                         binding.hint, color = gold, fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = PixelType.Body,
                     )
                 }
             }
             Text(
                 "Xbox, DualSense and Switch Pro all report the same buttons on " +
                     "Android, so one layout covers all three.",
-                color = gold, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                color = gold, fontSize = 9.sp, fontFamily = PixelType.Body,
                 modifier = Modifier.padding(top = 4.dp),
             )
 
@@ -239,7 +239,7 @@ fun SettingsOverlay(
                     group = binding.group
                     Text(
                         "── $group ──", color = gold, fontSize = 9.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = PixelType.Body,
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
@@ -257,13 +257,13 @@ fun SettingsOverlay(
                 ) {
                     Text(
                         binding.label, color = Color(0xFFD8DEE9), fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = PixelType.Body,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
                         if (armed) "press a key…" else keyLabel(keys[action]),
                         color = if (armed) Color(0xFFFF5C7A) else teal,
-                        fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp, fontFamily = PixelType.Body,
                     )
                 }
             }
@@ -271,14 +271,14 @@ fun SettingsOverlay(
             if (clashes.isNotEmpty()) {
                 Text(
                     "conflict: ${clashes.joinToString("; ")}", color = Color(0xFFFF5C7A),
-                    fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp, fontFamily = PixelType.Body,
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }
             Text(
                 "Volume keys are reserved: Android consumes them for system " +
                     "volume before the app sees them.",
-                color = gold, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                color = gold, fontSize = 9.sp, fontFamily = PixelType.Body,
                 modifier = Modifier.padding(top = 4.dp),
             )
 
@@ -297,7 +297,7 @@ fun SettingsOverlay(
 private fun Section(text: String) {
     Text(
         text, color = Color(0xFF6E768C), fontSize = 10.sp,
-        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+        fontFamily = PixelType.Display, fontWeight = FontWeight.Bold,
     )
 }
 
