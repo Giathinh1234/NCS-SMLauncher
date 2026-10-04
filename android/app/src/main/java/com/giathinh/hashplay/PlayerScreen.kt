@@ -1,17 +1,24 @@
 package com.giathinh.hashplay
 
+import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,6 +41,18 @@ fun PlayerScreen(
     var vizMode by remember { mutableStateOf(VizMode.NCS_BALL) }
     var showTorrentSheet by remember { mutableStateOf(false) }
     var magnetInput by remember { mutableStateOf("") }
+
+    // One settings store, shared with every flavor. Lean and gain live there
+    // now rather than on this surface, so the player screen reads them and the
+    // overlay is the only thing that writes them.
+    val hashPrefs = remember { HashSettings.open(context) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var theme by remember { mutableStateOf(HashSettings.theme(hashPrefs)) }
+    var lean by remember { mutableFloatStateOf(HashSettings.lean(hashPrefs)) }
+    val listState = rememberLazyListState()
+
+    // The stored gain is the starting level; the service owns it from then on.
+    LaunchedEffect(Unit) { controller.setVolume(HashSettings.gain(hashPrefs)) }
 
     val now by controller.state.collectAsState()
     val spectrumState = controller.spectrum.collectAsState()
@@ -132,7 +151,72 @@ fun PlayerScreen(
 
     DisposableEffect(Unit) { onDispose { controller.release() } }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF0A0C12))) {
+    // --- gamepad + keyboard -------------------------------------------------
+    // Both arrive as key events, so one handler covers a pad's D-pad, its
+    // buttons and a physical keyboard. The pad table is tried FIRST so a pad
+    // works even when the keymap has been rebound to something else.
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+
+    fun moveSelection(delta: Int) {
+        if (tracks.isEmpty()) return
+        val next = (selected + delta).coerceIn(0, tracks.size - 1)
+        selected = next
+        // Selecting is not playing. Starting audio on a scroll is exactly the
+        // accident this screen already had to be fixed for on touch.
+        scope.launch { listState.scrollToItem(next) }
+    }
+
+    fun stepLean(direction: Int) {
+        lean = HashSettings.stepLean(lean, direction)
+        HashSettings.setLean(hashPrefs, lean)
+    }
+
+    fun padAction(action: String): Boolean = when (action) {
+        Gamepad.A_PREV -> { controller.skipPrevious(); true }
+        Gamepad.A_NEXT -> { controller.skipNext(); true }
+        Gamepad.A_PLAY_PAUSE -> { controller.togglePause(); true }
+        Gamepad.A_UP -> { moveSelection(-1); true }
+        Gamepad.A_DOWN -> { moveSelection(1); true }
+        Gamepad.A_LEAN_LEFT -> { stepLean(-1); true }
+        Gamepad.A_LEAN_RIGHT -> { stepLean(1); true }
+        Gamepad.A_SETTINGS -> { settingsOpen = !settingsOpen; true }
+        else -> false
+    }
+
+    // Analog pad input (L2/R2 lean notches, stick direction). Registered here
+    // because the Activity is the only thing that sees generic motion.
+    PadListener { action -> padAction(action) }
+
+    fun onKey(ev: android.view.KeyEvent): Boolean {
+        if (ev.action != android.view.KeyEvent.ACTION_DOWN) return false
+        val code = ev.keyCode
+        Gamepad.resolve(code)?.let { return padAction(it) }
+        Gamepad.triggerFromButton(code)?.let { return padAction(it) }
+        // Stick axes are generic motion rather than key events, so they are
+        // not reachable from here. See MainActivity.dispatchGenericMotionEvent.
+        return false
+    }
+
+    // The theme is a layout decision, not a colour scheme: TOUCH means the
+    // player is being driven by a thumb, so the transport controls get real
+    // targets; KEYBOARD keeps the compact sizing that leaves room for the
+    // library and matches what a pad or a keyboard gets.
+    val touch = theme == HashSettings.Theme.TOUCH
+    val ctrlPad = if (touch) 14.dp else 4.dp
+    val ctrlFont = if (touch) 22.sp else 13.sp
+
+    Column(
+        Modifier.fillMaxSize().background(Color(0xFF0A0C12))
+            .focusRequester(focus)
+            .focusable()
+            .onPreviewKeyEvent { ev -> onKey(ev.nativeKeyEvent) }
+            // Analog triggers are NOT read here. L2/R2 arrive as generic
+            // motion events, which Compose pointer input cannot see on this
+            // version; MainActivity.dispatchGenericMotionEvent feeds
+            // Gamepad.sink, and the PadListener below registers this screen
+            // with it.
+    ) {
 
         // header
         Row(Modifier.fillMaxWidth().padding(16.dp, 20.dp, 16.dp, 8.dp),
@@ -153,6 +237,12 @@ fun PlayerScreen(
             TextButton(onClick = { showTorrentSheet = true }) {
                 Text("+ torrent", color = Color(0xFF00E6B8))
             }
+            // Lean and gain used to live on this surface. They are in the
+            // shared overlay now, so one button opens the one place they are
+            // edited -- and the same overlay exists in every flavor.
+            TextButton(onClick = { settingsOpen = true }) {
+                Text("settings", color = Color(0xFF8B91A5))
+            }
         }
 
         // visualizer (tap to cycle mode)
@@ -172,8 +262,11 @@ fun PlayerScreen(
             if (vizMode == VizMode.NCS_BALL) {
                 val tier = if (BuildConfig.HAS_TORRENTS) NcsSphere.Tier.FULL
                            else NcsSphere.Tier.LITE
+                // The lean is now a setting rather than a slider on this
+                // surface, but the renderer still honours it -- otherwise
+                // moving it in settings would do nothing visible at all.
                 NcsSphereView(spectrumState.value, controller.bass(), controller.level(),
-                              tier, Modifier.fillMaxSize())
+                              tier, Modifier.fillMaxSize(), lean = lean)
             } else {
                 Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
             }
@@ -218,47 +311,23 @@ fun PlayerScreen(
                     // away your place in the queue.
                     FilledTonalButton(
                         onClick = { controller.skipPrevious() },
-                        contentPadding = PaddingValues(4.dp)
+                        contentPadding = PaddingValues(ctrlPad)
                     ) {
-                        Text("⏮", color = Color(0xFF00E6B8))
+                        Text("⏮", color = Color(0xFF00E6B8), fontSize = ctrlFont)
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledTonalButton(onClick = { controller.togglePause() },
-                        contentPadding = PaddingValues(4.dp)) {
-                        Text(if (now.isPlaying) "❚❚" else "▶", color = Color(0xFF00E6B8))
+                        contentPadding = PaddingValues(ctrlPad)) {
+                        Text(if (now.isPlaying) "❚❚" else "▶",
+                            color = Color(0xFF00E6B8), fontSize = ctrlFont)
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledTonalButton(
                         onClick = { controller.skipNext() },
-                        contentPadding = PaddingValues(4.dp)
+                        contentPadding = PaddingValues(ctrlPad)
                     ) {
-                        Text("⏭", color = Color(0xFF00E6B8))
+                        Text("⏭", color = Color(0xFF00E6B8), fontSize = ctrlFont)
                     }
-                }
-
-                // In-app gain, the desktop's Player.volume (ncs_launcher.py:229).
-                // Separate from the system volume because it travels with the
-                // player, so it also governs Bluetooth and the notification.
-                var gain by remember { mutableFloatStateOf(controller.volume()) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("gain", color = Color(0xFF8B91A5), fontSize = 11.sp)
-                    Slider(
-                        value = gain,
-                        onValueChange = {
-                            gain = it
-                            controller.setVolume(it)
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 8.dp),
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF00E6B8),
-                            activeTrackColor = Color(0xFF00E6B8),
-                            inactiveTrackColor = Color(0xFF242A3A)
-                        )
-                    )
-                    Text("${(gain * 100).toInt()}%", color = Color(0xFF8B91A5),
-                        fontSize = 11.sp)
                 }
             }
         }
@@ -284,7 +353,7 @@ fun PlayerScreen(
             color = Color(0xFF00E6B8), fontSize = 12.sp,
             modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp))
 
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 8.dp), state = listState) {
             items(tracks.size) { i ->
                 val t = tracks[i]
                 val isSel = i == selected
@@ -343,6 +412,25 @@ fun PlayerScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    // The shared settings screen: theme, lean, gain, pads and key bindings.
+    // hashPrefs, NOT the player prefs -- lean/gain/theme live in HashSettings,
+    // and the overlay reads the keymap from whatever file it is handed.
+    if (settingsOpen) {
+        SettingsOverlay(
+            prefs = hashPrefs,
+            liveGain = controller.volume(),
+            onGain = { controller.setVolume(it) },
+            onClose = {
+                settingsOpen = false
+                // Re-read rather than assume: the theme chips write to disk and
+                // the overlay can be closed with the keyboard, not just the
+                // close button.
+                theme = HashSettings.theme(hashPrefs)
+                lean = HashSettings.lean(hashPrefs)
+            },
+        )
     }
 }
 

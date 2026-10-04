@@ -95,10 +95,18 @@ class LeanBehaviour(unittest.TestCase):
         self.assertIn("roundToStep", self.prefs)
 
     def test_dragging_the_slider_writes_the_value(self):
-        """Regression: the slider was wired to a 0-step nudge and did nothing."""
+        """Regression: the slider was wired to a 0-step nudge and did nothing.
+
+        The lean slider moved from the player surface into the shared settings
+        overlay, so this asserts on the file that owns it now. The old wiring
+        must stay gone from the player screen too.
+        """
+        overlay = (MAIN / "SettingsOverlay.kt").read_text()
         self.assertNotIn("onValueChange = { onNudge(0) }", self.screen)
-        self.assertIn("onValueChange = { onSet(NcsPrefs.stepLean(lean, 0, it)) }",
-                      self.screen)
+        self.assertNotIn("onValueChange = { onNudge(0) }", overlay)
+        # It must write the dragged value, not step by zero.
+        self.assertIn("onValueChange = {", overlay)
+        self.assertIn("HashSettings.stepLean(lean, 0, it)", overlay)
 
     def test_renderer_accepts_a_lean(self):
         sphere = (MAIN / "NcsSphere.kt").read_text()
@@ -156,6 +164,118 @@ class BuildScriptKnowsAboutNcs(unittest.TestCase):
 
     def test_gradle_failures_are_not_swallowed(self):
         self.assertNotIn("|| true", self.text.split("assemble")[0])
+
+class GamepadSupport(unittest.TestCase):
+    """One table has to cover Xbox, DualSense and Switch Pro.
+
+    That works because Android HID collapses all three onto the same
+    KEYCODE_BUTTON_* / DPAD codes. The test pins that mapping so a change to
+    one pad cannot quietly break the other two.
+    """
+
+    def setUp(self):
+        self.pad = (MAIN / "Gamepad.kt").read_text()
+        self.activity = (MAIN / "MainActivity.kt").read_text()
+
+    def test_face_button_is_play_pause(self):
+        """KEYCODE_BUTTON_A is the bottom face button on all three pads."""
+        self.assertIn("KeyEvent.KEYCODE_BUTTON_A", self.pad)
+
+    def test_dpad_is_navigation(self):
+        for code in ("KEYCODE_DPAD_UP", "KEYCODE_DPAD_DOWN",
+                     "KEYCODE_DPAD_LEFT", "KEYCODE_DPAD_RIGHT"):
+            self.assertIn(code, self.pad)
+
+    def test_triggers_are_read_from_axes(self):
+        """L2/R2 are analog on all three; treating them as buttons is a no-op."""
+        self.assertIn("MotionEvent.AXIS_LTRIGGER", self.pad)
+        self.assertIn("MotionEvent.AXIS_RTRIGGER", self.pad)
+        self.assertIn("TRIGGER_DEADZONE", self.pad)
+
+    def test_triggers_have_a_digital_fallback(self):
+        self.assertIn("KEYCODE_BUTTON_L2", self.pad)
+        self.assertIn("KEYCODE_BUTTON_R2", self.pad)
+
+    def test_pads_are_named_for_the_settings_screen(self):
+        for name in ("DualSense", "Xbox", "Switch Pro"):
+            self.assertIn(name, self.pad)
+
+    def test_stick_has_a_deadzone(self):
+        """A low stick threshold scrolls the library while you hold a direction."""
+        self.assertIn("STICK_DEADZONE", self.pad)
+
+    def test_generic_motion_is_dispatched_from_the_activity(self):
+        """The only door: Compose pointer input cannot see pad axes here."""
+        self.assertIn("dispatchGenericMotionEvent", self.activity)
+        self.assertIn("Gamepad.fromGenericMotion", self.activity)
+
+    def test_unclaimed_motion_is_not_swallowed(self):
+        self.assertIn("super.dispatchGenericMotionEvent(ev)", self.activity)
+
+    def test_the_sink_is_cleared_on_dispose(self):
+        """A stale sink calls into a screen that is gone."""
+        listener = (MAIN / "PadListener.kt").read_text()
+        self.assertIn("onDispose { Gamepad.sink = null }", listener)
+
+
+class ThemeModes(unittest.TestCase):
+    def setUp(self):
+        self.settings = (MAIN / "HashSettings.kt").read_text()
+        self.overlay = (MAIN / "SettingsOverlay.kt").read_text()
+
+    def test_both_themes_exist(self):
+        self.assertIn("enum class Theme { TOUCH, KEYBOARD", self.settings)
+
+    def test_theme_is_persisted(self):
+        self.assertIn("fun setTheme", self.settings)
+
+    def test_theme_bumps_the_control_size(self):
+        """A theme that only changes colour is not the layout switch asked for.
+
+        KEYBOARD is never named literally -- it is the `else` branch, the
+        compact default -- so this asserts the TOUCH comparison and that it
+        actually drives a measurement.
+        """
+        import re
+        for screen in ("PlayerScreen.kt", "NcsPlayerScreen.kt"):
+            src = (MAIN / screen).read_text()
+            self.assertIn("HashSettings.Theme.TOUCH", src, screen)
+            self.assertIn("= if (touch)", src, screen)
+
+    def test_theme_defaults_to_keyboard(self):
+        """The mode that still works with a keyboard or pad attached."""
+        self.assertIn("?: KEYBOARD", self.settings)
+
+
+class SettingsReachableEverywhere(unittest.TestCase):
+    def setUp(self):
+        self.overlay = (MAIN / "SettingsOverlay.kt").read_text()
+
+    def test_the_overlay_is_shared(self):
+        """One implementation, or the flavors drift apart."""
+        self.assertIn("fun SettingsOverlay(", self.overlay)
+
+    def test_every_screen_can_open_it(self):
+        for screen in ("PlayerScreen.kt", "NcsPlayerScreen.kt"):
+            src = (MAIN / screen).read_text()
+            self.assertIn("SettingsOverlay(", screen and src, screen)
+
+    def test_lean_and_gain_are_in_the_overlay(self):
+        self.assertIn("LEAN VISUALIZER", self.overlay)
+        self.assertIn("GAIN", self.overlay)
+        self.assertIn("HashSettings.stepLean", self.overlay)
+        self.assertIn("HashSettings.stepGain", self.overlay)
+
+    def test_lean_and_gain_left_the_player_surface(self):
+        """They were on the main screen before and crowded the player."""
+        for screen in ("PlayerScreen.kt", "NcsPlayerScreen.kt"):
+            src = (MAIN / screen).read_text()
+            self.assertNotIn("fun LeanControl(", src, screen)
+            self.assertNotIn("fun GainControl(", src, screen)
+
+    def test_gain_is_written_through_to_the_player(self):
+        """The service owns the volume; the slider must not assume it."""
+        self.assertIn("onGain(gain)", self.overlay)
 
 
 if __name__ == "__main__":

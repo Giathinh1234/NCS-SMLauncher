@@ -1,14 +1,14 @@
 package com.giathinh.hashplay
 
+import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,6 +19,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -60,7 +61,11 @@ fun NcsPlayerScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Two files, two jobs. NcsPrefs keeps the keymap and the visualizer mode;
+    // HashSettings keeps what every flavor shares -- theme, lean and gain.
+    // Lean and gain left the player surface and live in settings now.
     val prefs = remember { NcsPrefs.open(context) }
+    val hashPrefs = remember { HashSettings.open(context) }
 
     val controller = remember { PlayerController(context) }
     val torrents = remember { TorrentManager(context) }
@@ -73,8 +78,20 @@ fun NcsPlayerScreen(
     var settingsOpen by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf<String?>(null) }
 
-    var lean by remember { mutableFloatStateOf(NcsPrefs.lean(prefs)) }
+    var lean by remember { mutableFloatStateOf(HashSettings.lean(hashPrefs)) }
+    var theme by remember { mutableStateOf(HashSettings.theme(hashPrefs)) }
     var vizMode by remember { mutableIntStateOf(NcsPrefs.vizMode(prefs)) }
+    val listState = rememberLazyListState()
+
+    // The stored gain is only the starting level; the service owns it after.
+    LaunchedEffect(Unit) { controller.setVolume(HashSettings.gain(hashPrefs)) }
+
+    // TOUCH means big targets under the thumb; KEYBOARD stays compact, which is
+    // also what a pad gets. Sizes below all derive from this one flag.
+    val touch = theme == HashSettings.Theme.TOUCH
+    val ctrlFont = if (touch) 20.sp else 11.sp
+    val ctrlPad = if (touch) 12.dp else 4.dp
+    val rowFont = if (touch) 14.sp else 11.sp
 
     val now by controller.state.collectAsState()
     val spectrumState = controller.spectrum.collectAsState()
@@ -136,6 +153,38 @@ fun NcsPlayerScreen(
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
+    // --- gamepad, on top of the keyboard keymap ----------------------------
+    // A pad's buttons arrive as ordinary KeyEvents, so this is the same door.
+    // The pad table is tried FIRST: a gamepad has its own physical layout, and
+    // it should keep working even if the keymap has been rebound to something
+    // else. A stick with no D-pad reports as a pair of axes on the same event.
+    fun moveSelection(delta: Int) {
+        if (tracks.isEmpty()) return
+        val next = (selected + delta).coerceIn(0, tracks.size - 1)
+        selected = next
+        scope.launch { listState.scrollToItem(next) }
+    }
+
+    fun stepLean(direction: Int) {
+        lean = HashSettings.stepLean(lean, direction)
+        HashSettings.setLean(hashPrefs, lean)
+    }
+
+    fun padAction(action: String): Boolean = when (action) {
+        Gamepad.A_PREV -> { controller.skipPrevious(); true }
+        Gamepad.A_NEXT -> { controller.skipNext(); true }
+        Gamepad.A_PLAY_PAUSE -> { controller.togglePause(); true }
+        Gamepad.A_UP -> { moveSelection(-1); true }
+        Gamepad.A_DOWN -> { moveSelection(1); true }
+        Gamepad.A_LEAN_LEFT -> { stepLean(-1); true }
+        Gamepad.A_LEAN_RIGHT -> { stepLean(1); true }
+        Gamepad.A_SETTINGS -> { settingsOpen = !settingsOpen; true }
+        else -> false
+    }
+
+    // Analog pad input, via the Activity -- see PadListener.
+    PadListener { action -> padAction(action) }
+
     fun onKey(ev: android.view.KeyEvent): Boolean {
             if (ev.action != android.view.KeyEvent.ACTION_DOWN) return false
             val code = ev.keyCode
@@ -147,6 +196,9 @@ fun NcsPlayerScreen(
                 NcsPrefs.bind(prefs, armed, code)
                 return true
             }
+
+            Gamepad.resolve(code)?.let { return padAction(it) }
+            Gamepad.triggerFromButton(code)?.let { return padAction(it) }
 
             val target = tracks.getOrNull(selected)
             val handled = when (NcsPrefs.resolve(prefs, code)) {
@@ -189,14 +241,23 @@ fun NcsPlayerScreen(
             .focusRequester(focus)
             .focusable()
             .onPreviewKeyEvent { ev -> onKey(ev.nativeKeyEvent) }
+            // Analog triggers. Xbox, DualSense and Switch Pro all report L2/R2
+            // as AXES rather than keycodes, and a key event never arrives for
+            // them -- so without this the bumpers do nothing on most pads.
+            // Analog triggers arrive as generic motion events, which Compose
+            // pointer input cannot see on this version. They come through
+            // MainActivity.dispatchGenericMotionEvent into Gamepad.sink.
     ) {
         Row(Modifier.fillMaxSize()) {
 
             // --- left: library ------------------------------------------------
             Column(Modifier.weight(1f).fillMaxHeight().padding(12.dp)) {
-                PixelHeader(folder, tracks.size, BuildConfig.HAS_TORRENTS) {
-                    folderLauncher.launch(null)
-                }
+                PixelHeader(
+                    folder, tracks.size, BuildConfig.HAS_TORRENTS,
+                    onAdd = { folderLauncher.launch(null) },
+                    onSettings = { settingsOpen = true },
+                    big = touch,
+                )
                 Spacer(Modifier.height(8.dp))
 
                 if (tracks.isEmpty()) {
@@ -210,10 +271,11 @@ fun NcsPlayerScreen(
                     }
                 } else {
                     PixelBox(Modifier.fillMaxWidth().weight(1f)) {
-                        LazyColumn(Modifier.fillMaxSize()) {
+                        LazyColumn(Modifier.fillMaxSize(), state = listState) {
                             itemsIndexed(tracks) { index, track ->
                                 TrackRow(
                                     track, index == selected,
+                                    fontSize = rowFont,
                                     modifier = Modifier.clickable {
                                         selected = index
                                         // Never autoplay on a tap that was
@@ -225,9 +287,9 @@ fun NcsPlayerScreen(
                         }
                     }
                 }
-
-                Spacer(Modifier.height(8.dp))
-                LeanControl(lean) { v -> NcsPrefs.setLean(prefs, v); lean = v }
+                // Lean and gain used to sit here. They are in the shared
+                // settings overlay now, which is the one place every flavor
+                // edits them -- and the pad bumpers still reach the lean.
             }
 
             // --- right: the sphere, full height ------------------------------
@@ -265,9 +327,8 @@ fun NcsPlayerScreen(
                 }
 
                 Spacer(Modifier.height(10.dp))
-                Transport(now, controller, Modifier.fillMaxWidth())
-                Spacer(Modifier.height(6.dp))
-                GainControl(controller, Modifier.fillMaxWidth())
+                Transport(now, controller, Modifier.fillMaxWidth(),
+                          fontSize = ctrlFont, pad = ctrlPad)
             }
         }
 
@@ -285,13 +346,21 @@ fun NcsPlayerScreen(
         }
 
         if (settingsOpen) {
+            // hashPrefs, not prefs: theme/lean/gain live in HashSettings. The
+            // overlay reads the keymap from whatever file it is handed, and the
+            // binding keys do not collide with those.
             SettingsOverlay(
-                prefs = prefs,
-                capturing = capturing,
-                onCapture = { capturing = it },
-                lean = lean,
-                onLean = { NcsPrefs.setLean(prefs, it); lean = it },
-                onClose = { settingsOpen = false; capturing = null },
+                prefs = hashPrefs,
+                liveGain = controller.volume(),
+                onGain = { controller.setVolume(it) },
+                onClose = {
+                    settingsOpen = false
+                    capturing = null
+                    // Re-read on close rather than trusting the close button:
+                    // the overlay can also be dismissed from the keyboard.
+                    theme = HashSettings.theme(hashPrefs)
+                    lean = HashSettings.lean(hashPrefs)
+                },
             )
         }
     }
@@ -328,22 +397,33 @@ private fun PixelBox(modifier: Modifier, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun PixelTag(text: String, modifier: Modifier = Modifier) {
+private fun PixelTag(
+    text: String,
+    modifier: Modifier = Modifier,
+    fontSize: androidx.compose.ui.unit.TextUnit = 10.sp,
+) {
     Box(
         modifier.clip(RoundedCornerShape(2.dp))
             .background(Px07090D.copy(alpha = 0.82f))
             .border(1.dp, Px1E2430, RoundedCornerShape(2.dp))
             .padding(horizontal = 6.dp, vertical = 3.dp),
     ) {
-        Text(text, color = PxTEAL, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        Text(text, color = PxTEAL, fontSize = fontSize, fontFamily = FontFamily.Monospace)
     }
 }
 
 @Composable
-private fun PixelHeader(folder: String?, count: Int, hasTorrents: Boolean, onAdd: () -> Unit) {
+private fun PixelHeader(
+    folder: String?,
+    count: Int,
+    hasTorrents: Boolean,
+    onAdd: () -> Unit,
+    onSettings: () -> Unit,
+    big: Boolean = false,
+) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "NCS", color = PxTEAL, fontSize = 18.sp,
+            "NCS", color = PxTEAL, fontSize = if (big) 24.sp else 18.sp,
             fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black,
         )
         Spacer(Modifier.width(8.dp))
@@ -357,11 +437,24 @@ private fun PixelHeader(folder: String?, count: Int, hasTorrents: Boolean, onAdd
         PixelTag("${count} tracks")
         Spacer(Modifier.width(6.dp))
         PixelTag("+ folder", Modifier.clickable { onAdd() })
+        Spacer(Modifier.width(6.dp))
+        // The one settings door. Lean, gain, theme and every binding are in
+        // there now, so the header does not carry its own sliders.
+        PixelTag(
+            "settings",
+            Modifier.clickable { onSettings() },
+            fontSize = if (big) 13.sp else 10.sp,
+        )
     }
 }
 
 @Composable
-private fun TrackRow(track: Track, isSelected: Boolean, modifier: Modifier = Modifier) {
+private fun TrackRow(
+    track: Track,
+    isSelected: Boolean,
+    fontSize: androidx.compose.ui.unit.TextUnit = 11.sp,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier.fillMaxWidth().padding(vertical = 3.dp)
             .clip(RoundedCornerShape(2.dp))
@@ -371,7 +464,7 @@ private fun TrackRow(track: Track, isSelected: Boolean, modifier: Modifier = Mod
     ) {
         Text(
             track.title.take(38), color = if (isSelected) PxGOLD else PxD8DEE9,
-            fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+            fontSize = fontSize, fontFamily = FontFamily.Monospace,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
@@ -383,57 +476,21 @@ private fun TrackRow(track: Track, isSelected: Boolean, modifier: Modifier = Mod
 }
 
 @Composable
-private fun LeanControl(lean: Float, onSet: (Float) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("LEAN", color = Px6E768C, fontSize = 10.sp,
-             fontFamily = FontFamily.Monospace)
-        TextButton("«") { onSet(NcsPrefs.stepLean(lean, -1)) }
-
-        // The slider has to WRITE the dragged value. Wiring it to the same
-        // step-nudge the buttons use made dragging a no-op: the thumb followed
-        // the finger, then the state snapped straight back to where it was.
-        Slider(
-            value = lean,
-            onValueChange = { onSet(NcsPrefs.stepLean(lean, 0, it)) },
-            valueRange = NcsPrefs.LEAN_MIN..NcsPrefs.LEAN_MAX,
-            modifier = Modifier.weight(1f).height(24.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = PxGOLD, activeTrackColor = PxGOLD,
-                inactiveTrackColor = Px1E2430,
-            ),
-        )
-        TextButton("»") { onSet(NcsPrefs.stepLean(lean, 1)) }
-        Text(
-            "%+.2f".format(lean), color = PxGOLD, fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-        )
-    }
-}
-
-@Composable
-private fun TextButton(label: String, onClick: () -> Unit) {
-    Box(
-        Modifier.clip(RoundedCornerShape(2.dp))
-            .border(1.dp, Px1E2430, RoundedCornerShape(2.dp))
-            .background(Px12151F)
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        Text(label, color = PxGOLD, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-    }
-}
-
-@Composable
 private fun Transport(
     now: PlayerController.NowPlaying,
     controller: PlayerController,
     modifier: Modifier = Modifier,
+    fontSize: androidx.compose.ui.unit.TextUnit = 11.sp,
+    pad: androidx.compose.ui.unit.Dp = 6.dp,
 ) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        PixelTag("⏮", Modifier.clickable { controller.skipPrevious() })
+    // The theme changes the transport for real: under TOUCH the buttons get a
+    // font and a padding a thumb can hit, under KEYBOARD they stay compact so
+    // the library keeps the space.
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(pad)) {
+        PixelTag("⏮", Modifier.clickable { controller.skipPrevious() }, fontSize)
         PixelTag(if (now.isPlaying) "⏸" else "▶",
-                 Modifier.clickable { controller.togglePause() })
-        PixelTag("⏭", Modifier.clickable { controller.skipNext() })
+                 Modifier.clickable { controller.togglePause() }, fontSize)
+        PixelTag("⏭", Modifier.clickable { controller.skipNext() }, fontSize)
         Spacer(Modifier.weight(1f))
         if (now.durationMs > 0) {
             Text(
@@ -442,134 +499,6 @@ private fun Transport(
             )
         }
     }
-}
-
-@Composable
-private fun GainControl(controller: PlayerController, modifier: Modifier = Modifier) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text("GAIN", color = Px6E768C, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-        Slider(
-            value = controller.volume(),
-            onValueChange = { controller.setVolume(it) },
-            valueRange = 0f..1f,
-            modifier = Modifier.weight(1f).height(24.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = PxTEAL, activeTrackColor = PxTEAL,
-                inactiveTrackColor = Px1E2430,
-            ),
-        )
-        Text(
-            "${(controller.volume() * 100).toInt()}%",
-            color = PxTEAL, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-        )
-    }
-}
-
-@Composable
-private fun SettingsOverlay(
-    prefs: android.content.SharedPreferences,
-    capturing: String?,
-    onCapture: (String?) -> Unit,
-    lean: Float,
-    onLean: (Float) -> Unit,
-    onClose: () -> Unit,
-) {
-    Box(
-        Modifier.fillMaxSize().background(Color(0xCC05070B))
-            .clickable(enabled = false) {},
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            Modifier.fillMaxWidth(0.86f).clip(RoundedCornerShape(2.dp))
-                .border(2.dp, PxGOLD, RoundedCornerShape(2.dp))
-                .background(Px0E1116).padding(14.dp),
-        ) {
-            Text(
-                if (capturing != null) "press a key for ${NcsPrefs.label(capturing)} (Esc cancels)"
-                else "SETTINGS",
-                color = if (capturing != null) PxRED else PxGOLD,
-                fontSize = 14.sp, fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(10.dp))
-
-            Text("LEAN", color = Px6E768C, fontSize = 10.sp,
-                 fontFamily = FontFamily.Monospace)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton("«") { onLean(NcsPrefs.stepLean(lean, -1)) }
-                Text(
-                    "%+.2f   (← full left, → full right)".format(lean),
-                    color = PxGOLD, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
-                TextButton("»") { onLean(NcsPrefs.stepLean(lean, 1)) }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text("KEY BINDINGS", color = Px6E768C, fontSize = 10.sp,
-                 fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.height(4.dp))
-
-            val bindings = NcsPrefs.bindings(prefs)
-            var group by remember { mutableStateOf("") }
-            for ((action, binding) in NcsPrefs.DEFAULTS) {
-                if (binding.group != group) {
-                    group = binding.group
-                    Spacer(Modifier.height(6.dp))
-                    Text("── $group ──", color = Px6E768C, fontSize = 9.sp,
-                         fontFamily = FontFamily.Monospace)
-                }
-                val armed = capturing == action
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(if (armed) Px1E2430 else Color.Transparent)
-                        .clickable { onCapture(action) }
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        binding.label, color = PxD8DEE9, fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        keyLabel(bindings[action]), color = if (armed) PxRED else PxTEAL,
-                        fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-
-            val clashes = NcsPrefs.conflicts(prefs)
-            if (clashes.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "conflict: ${clashes.joinToString("; ")}", color = PxRED,
-                    fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TextButton("reset keys") { NcsPrefs.resetBindings(prefs) }
-                TextButton("close") { onClose() }
-            }
-        }
-    }
-}
-
-private fun keyLabel(code: Int?): String = when (code) {
-    null -> "-"
-    66 -> "ENTER"
-    85 -> "MENU"
-    112 -> "SETTINGS"
-    113 -> "ESC"
-    273 -> "MEDIA PREV"
-    275 -> "MEDIA NEXT"
-    85 -> "PLAY/PAUSE"
-    20 -> "+5s"
-    21 -> "-5s"
-    else -> "KEY $code"
 }
 
 /** Seek by a whole number of seconds, as a fraction of the track. */

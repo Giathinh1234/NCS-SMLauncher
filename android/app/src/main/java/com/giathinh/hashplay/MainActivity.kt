@@ -13,6 +13,27 @@ class MainActivity : ComponentActivity() {
 
     var pendingMagnet by mutableStateOf<String?>(null)
 
+    /**
+     * Analog gamepad input.
+     *
+     * Triggers and sticks arrive here and nowhere else. On this Compose
+     * version a PointerInputChange carries no native MotionEvent, so neither
+     * pointerInput nor onPointerEvent can see them -- dispatchGenericMotionEvent
+     * is the only door, which is why the screens register a sink rather than a
+     * Modifier listener.
+     *
+     * Returning false when nothing claims the event lets the rest of the
+     * system still see it, so this never swallows input it does not handle.
+     */
+    override fun dispatchGenericMotionEvent(ev: android.view.MotionEvent): Boolean {
+        val action = Gamepad.fromGenericMotion(ev)
+        if (action != null) {
+            Gamepad.sink?.onPadAction(action)
+            return true
+        }
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
