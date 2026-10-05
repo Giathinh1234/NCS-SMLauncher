@@ -206,8 +206,38 @@ fun PlayerScreen(
     val ctrlPad = if (touch) 14.dp else 4.dp
     val ctrlFont = if (touch) 22.sp else 13.sp
 
+    // Full-bleed background, offered on the keyboard layout only.
+    var bgVis by remember { mutableStateOf(HashSettings.backgroundVisualizer(hashPrefs)) }
+    val sphereTier =
+        if (BuildConfig.HAS_TORRENTS) NcsSphere.Tier.FULL else NcsSphere.Tier.LITE
+
+    /** The sphere/visualizer itself, so boxed and background never diverge. */
+    @androidx.compose.runtime.Composable
+    fun VisualizerBody() {
+        if (vizMode == VizMode.NCS_BALL) {
+            NcsSphereView(
+                spectrumState.value, controller.bass(), controller.level(),
+                sphereTier, Modifier.fillMaxSize(), lean = lean,
+            )
+        } else {
+            Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
+        }
+    }
+
+    // When the visualizer is the background, the near-black it used to be boxed
+    // in becomes the app background, so the sphere reads against the same
+    // colour it always did rather than against a different one.
+    val appInk = if (bgVis) HashSettings.VisualizerInk else Color(0xFF0A0C12)
+
+    Box(Modifier.fillMaxSize().background(appInk)) {
+    // The full-bleed layer. Stretching edge to edge is the whole point, so it
+    // ignores the lean and the layout entirely: lean moves the sphere inside
+    // its own box, and there is no box here.
+    if (bgVis) {
+        Box(Modifier.fillMaxSize()) { VisualizerBody() }
+    }
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF0A0C12))
+        Modifier.fillMaxSize()
             .focusRequester(focus)
             .focusable()
             .onPreviewKeyEvent { ev -> onKey(ev.nativeKeyEvent) }
@@ -246,7 +276,12 @@ fun PlayerScreen(
         }
 
         // visualizer (tap to cycle mode)
-        Box(Modifier.fillMaxWidth().height(220.dp)
+        //
+        // Hidden when it is already the background: leaving a 220dp box on top
+        // of a full-bleed sphere would draw the same thing twice and put a
+        // border back where the whole point was removing one.
+        if (!bgVis) Box(
+            Modifier.fillMaxWidth().height(220.dp)
             .clickable {
                 vizMode = VizMode.entries[(vizMode.ordinal + 1) % VizMode.entries.size]
             }) {
@@ -259,17 +294,11 @@ fun PlayerScreen(
             // NCS_BALL is the desktop's sphere renderer, ported. Lite keeps it
             // too -- the user was explicit that the lite build must still have
             // the ball, just drawn from fewer points.
-            if (vizMode == VizMode.NCS_BALL) {
-                val tier = if (BuildConfig.HAS_TORRENTS) NcsSphere.Tier.FULL
-                           else NcsSphere.Tier.LITE
-                // The lean is now a setting rather than a slider on this
-                // surface, but the renderer still honours it -- otherwise
-                // moving it in settings would do nothing visible at all.
-                NcsSphereView(spectrumState.value, controller.bass(), controller.level(),
-                              tier, Modifier.fillMaxSize(), lean = lean)
-            } else {
-                Visualizer(spectrumState, vizMode, Modifier.fillMaxSize())
-            }
+            //
+            // The lean is a setting rather than a slider on this surface, but
+            // the renderer still honours it -- otherwise moving it in settings
+            // would do nothing visible at all.
+            VisualizerBody()
             if (!now.isPlaying && now.title.isEmpty()) {
                 // Sits BELOW the ball, not on it. Centred over the sphere it
                 // drew straight through the point cloud and made both look
@@ -413,10 +442,14 @@ fun PlayerScreen(
             }
         }
     }
+    }   // closes the Box that holds the visualizer background
 
     // The shared settings screen: theme, lean, gain, pads and key bindings.
     // hashPrefs, NOT the player prefs -- lean/gain/theme live in HashSettings,
     // and the overlay reads the keymap from whatever file it is handed.
+    //
+    // Deliberately a sibling of the Box above, not a child: the overlay has to
+    // draw on top of the background layer rather than inside it.
     if (settingsOpen) {
         SettingsOverlay(
             prefs = hashPrefs,
@@ -429,6 +462,7 @@ fun PlayerScreen(
                 // close button.
                 theme = HashSettings.theme(hashPrefs)
                 lean = HashSettings.lean(hashPrefs)
+                bgVis = HashSettings.backgroundVisualizer(hashPrefs)
             },
         )
     }

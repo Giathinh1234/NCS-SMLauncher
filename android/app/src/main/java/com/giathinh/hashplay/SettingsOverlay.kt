@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +41,7 @@ fun SettingsOverlay(
     val context = LocalContext.current
 
     var theme by remember { mutableStateOf(HashSettings.theme(prefs)) }
+    var bgVis by remember { mutableStateOf(HashSettings.backgroundVisualizer(prefs)) }
     var lean by remember { mutableFloatStateOf(HashSettings.lean(prefs)) }
     var gain by remember { mutableFloatStateOf(liveGain) }
 
@@ -128,6 +130,33 @@ fun SettingsOverlay(
                 color = gold, fontSize = 10.sp, fontFamily = PixelType.Body,
                 modifier = Modifier.padding(top = 4.dp),
             )
+
+            // Only offered on the keyboard layout: a full-bleed reactive
+            // background behind a thumb-driven layout puts moving light under
+            // the controls you are trying to hit.
+            if (theme == HashSettings.Theme.KEYBOARD) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = bgVis,
+                        onCheckedChange = {
+                            bgVis = it
+                            HashSettings.setBackgroundVisualizer(prefs, it)
+                        },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Visualizer as background",
+                        color = Color(0xFFD8DEE9), fontSize = 11.sp,
+                        fontFamily = PixelType.Body,
+                    )
+                }
+                Text(
+                    "Fills the whole screen edge to edge, no box. The app " +
+                        "background takes its near-black so the sphere still reads.",
+                    color = gold, fontSize = 10.sp, fontFamily = PixelType.Body,
+                )
+            }
 
             // --- lean -------------------------------------------------------
             Spacer(Modifier.height(12.dp))

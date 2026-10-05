@@ -55,6 +55,26 @@ object HashSettings {
         p.edit().putString(KEY_THEME, theme.name).apply()
     }
 
+    // --- visualizer as background -------------------------------------------
+    /**
+     * Draw the visualizer full-bleed behind everything, instead of inside a
+     * bordered box on one side.
+     *
+     * Only offered on the KEYBOARD theme, and the UI only *shows* the toggle
+     * there. A full-bleed reactive background behind a thumb-driven layout is
+     * unreadable -- the light moves under the controls you are trying to hit.
+     * On a keyboard or pad layout nothing moves under your fingers.
+     */
+    fun backgroundVisualizer(p: SharedPreferences): Boolean =
+        p.getBoolean(KEY_BG_VIS, false)
+
+    fun setBackgroundVisualizer(p: SharedPreferences, on: Boolean) {
+        p.edit().putBoolean(KEY_BG_VIS, on).apply()
+    }
+
+    /** The near-black the visualizer box used to be filled with. */
+    val VisualizerInk = androidx.compose.ui.graphics.Color(0xFF07090D)
+
     // --- lean ---------------------------------------------------------------
     const val LEAN_MIN = -1f
     const val LEAN_MAX = 1f
@@ -123,6 +143,7 @@ object HashSettings {
     }
 
     private const val KEY_THEME = "ui_theme"
+    private const val KEY_BG_VIS = "background_visualizer"
     private const val KEY_LEAN = "visualizer_lean"
     private const val KEY_GAIN = "player_gain"
 }

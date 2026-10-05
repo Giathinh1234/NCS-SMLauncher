@@ -347,5 +347,53 @@ class PixelTypographyEverywhere(unittest.TestCase):
         self.assertIn("PixelType.Display", screen[idx:idx + 200])
 
 
+
+class VisualizerAsBackground(unittest.TestCase):
+    """The full-bleed option, and the near-black it hands the app."""
+
+    def setUp(self):
+        self.settings = (MAIN / "HashSettings.kt").read_text()
+        self.overlay = (MAIN / "SettingsOverlay.kt").read_text()
+        self.player = (MAIN / "PlayerScreen.kt").read_text()
+
+    def test_the_option_is_persisted(self):
+        self.assertIn("fun backgroundVisualizer", self.settings)
+        self.assertIn("fun setBackgroundVisualizer", self.settings)
+
+    def test_it_offers_nothing_on_touch(self):
+        """Moving light under a thumb-driven layout is unreadable."""
+        self.assertIn("if (theme == HashSettings.Theme.KEYBOARD)", self.overlay)
+        self.assertIn("Visualizer as background", self.overlay)
+
+    def test_the_background_takes_the_box_near_black(self):
+        self.assertIn("VisualizerInk", self.settings)
+        self.assertIn("Color(0xFF07090D)", self.settings)
+
+    def test_the_app_uses_that_ink_only_when_it_is_on(self):
+        self.assertIn("val appInk = if (bgVis) HashSettings.VisualizerInk", self.player)
+
+    def test_the_layer_is_full_bleed(self):
+        self.assertIn("if (bgVis) {", self.player)
+        self.assertIn("Box(Modifier.fillMaxSize()) { VisualizerBody() }", self.player)
+
+    def test_the_box_is_not_also_drawn(self):
+        """Two copies of the same sphere, and the border the option removes."""
+        self.assertIn("if (!bgVis) Box(", self.player)
+
+    def test_both_placements_share_one_renderer(self):
+        """Two copies of the draw call is how the boxed and full-bleed ones
+        quietly diverge."""
+        self.assertIn("fun VisualizerBody()", self.player)
+        # Exactly one NcsSphereView call site: inside VisualizerBody.
+        self.assertEqual(self.player.count("NcsSphereView("), 1)
+
+    def test_the_settings_overlay_draws_above_it(self):
+        """Otherwise the overlay sits under the background layer."""
+        idx = self.player.find("SettingsOverlay(")
+        self.assertGreater(idx, -1)
+        window = self.player[idx:idx + 400]
+        self.assertIn("onClose", window)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
