@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Only the lite flavor overrides the app label. Both APKs can be installed at
-  once, and two icons with the same label on one home screen is impossible
+  once, and two icons both called "HashPlay" on one home screen is impossible
   to tell apart. The point of shipping a lighter build is that someone might
   install both and keep whichever they prefer.
 -->
 <resources>
-    <string name="app_name">NCS Player Lite</string>
+    <string name="app_name">HashPlay Lite</string>
 </resources>

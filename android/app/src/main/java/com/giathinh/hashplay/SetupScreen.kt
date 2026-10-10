@@ -69,18 +69,18 @@ fun SetupScreen(onDone: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("NCS Player", style = MaterialTheme.typography.headlineMedium,
+        Text("HashPlay", style = MaterialTheme.typography.headlineMedium,
              fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Text(
-            "Your music stays on this device. NCS Player reads your audio library " +
+            "Your music stays on this device. HashPlay reads your audio library " +
                 "and plays it -- nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Spacer(Modifier.height(26.dp))
 
-        Text("NCS Player needs permission to read your music so it can list it " +
+        Text("HashPlay needs permission to read your music so it can list it " +
             "in your library. Without it there is nothing to show.",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.fillMaxWidth()

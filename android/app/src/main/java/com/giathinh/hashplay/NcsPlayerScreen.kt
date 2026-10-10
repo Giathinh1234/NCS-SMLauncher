@@ -78,13 +78,7 @@ fun NcsPlayerScreen(
     var settingsOpen by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf<String?>(null) }
 
-    // The NCS surface starts with its ball deliberately right of centre. Lean
-    // belongs to Settings; this screen only consumes that persisted value.
-    val lean = remember { HashSettings.leanOrDefault(hashPrefs, +0.35f) }
-    var backgroundVisualizer by remember {
-        mutableStateOf(HashSettings.backgroundVisualizerOrDefault(hashPrefs, true))
-    }
-    var libraryPanel by remember { mutableStateOf(HashSettings.libraryPanel(hashPrefs)) }
+    var lean by remember { mutableFloatStateOf(HashSettings.lean(hashPrefs)) }
     var theme by remember { mutableStateOf(HashSettings.theme(hashPrefs)) }
     var vizMode by remember { mutableIntStateOf(NcsPrefs.vizMode(prefs)) }
     val listState = rememberLazyListState()
@@ -172,7 +166,8 @@ fun NcsPlayerScreen(
     }
 
     fun stepLean(direction: Int) {
-        HashSettings.setLean(hashPrefs, HashSettings.stepLean(lean, direction))
+        lean = HashSettings.stepLean(lean, direction)
+        HashSettings.setLean(hashPrefs, lean)
     }
 
     fun padAction(action: String): Boolean = when (action) {
@@ -239,9 +234,10 @@ fun NcsPlayerScreen(
         }
 
     androidx.compose.foundation.layout.Box(
-        Modifier.fillMaxSize().background(
-            if (backgroundVisualizer) HashSettings.VisualizerInk else Px0E1116
-        )
+        Modifier.fillMaxSize().background(Px0E1116)
+            // Without this the LEAN slider and GAIN slider render underneath the
+            // system navigation bar and cannot actually be dragged.
+            .systemBarsPadding()
             .focusRequester(focus)
             .focusable()
             .onPreviewKeyEvent { ev -> onKey(ev.nativeKeyEvent) }
@@ -252,17 +248,7 @@ fun NcsPlayerScreen(
             // pointer input cannot see on this version. They come through
             // MainActivity.dispatchGenericMotionEvent into Gamepad.sink.
     ) {
-        // This is deliberately the first child: it has no padding, border, or
-        // weighted parent, so the sphere really is the complete backdrop.
-        if (backgroundVisualizer) {
-            NcsSphereView(
-                spectrumState.value, controller.bass(), controller.level(),
-                NcsSphere.Tier.FULL, Modifier.fillMaxSize(), lean = lean,
-            )
-        }
-
-        if (!backgroundVisualizer) {
-            Row(Modifier.fillMaxSize().systemBarsPadding()) {
+        Row(Modifier.fillMaxSize()) {
 
             // --- left: library ------------------------------------------------
             Column(Modifier.weight(1f).fillMaxHeight().padding(12.dp)) {
@@ -344,63 +330,6 @@ fun NcsPlayerScreen(
                 Transport(now, controller, Modifier.fillMaxWidth(),
                           fontSize = ctrlFont, pad = ctrlPad)
             }
-            }
-        } else {
-            // The optional library floats over the full-bleed artwork rather
-            // than claiming a weighted half of the screen.
-            if (libraryPanel) {
-                Box(
-                    Modifier.align(Alignment.TopEnd)
-                        .fillMaxWidth(0.38f)
-                        .fillMaxHeight()
-                        .padding(12.dp)
-                        .padding(bottom = 56.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .border(1.dp, Px1E2430, RoundedCornerShape(2.dp))
-                        .background(Px0E1116.copy(alpha = 0.92f))
-                        .padding(8.dp),
-                ) {
-                    Column(Modifier.fillMaxSize()) {
-                        PixelHeader(
-                            folder, tracks.size, BuildConfig.HAS_TORRENTS,
-                            onAdd = { folderLauncher.launch(null) },
-                            onSettings = { settingsOpen = true },
-                            big = touch,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        if (tracks.isEmpty()) {
-                            Text(
-                                if (scanError != null) "library: $scanError"
-                                else "no tracks yet · + folder to add one",
-                                color = Px6E768C, fontSize = 11.sp,
-                                fontFamily = PixelType.Body,
-                            )
-                        } else {
-                            LazyColumn(Modifier.fillMaxSize(), state = listState) {
-                                itemsIndexed(tracks) { index, track ->
-                                    TrackRow(
-                                        track, index == selected,
-                                        fontSize = rowFont,
-                                        modifier = Modifier.clickable { selected = index },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Transport remains a separate top layer, spanning the screen and
-            // therefore tappable regardless of the moving background.
-            Transport(
-                now, controller,
-                Modifier.align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .systemBarsPadding()
-                    .padding(12.dp),
-                fontSize = ctrlFont,
-                pad = ctrlPad,
-            )
         }
 
         if (now.title.isNotEmpty()) {
@@ -430,9 +359,7 @@ fun NcsPlayerScreen(
                     // Re-read on close rather than trusting the close button:
                     // the overlay can also be dismissed from the keyboard.
                     theme = HashSettings.theme(hashPrefs)
-                    backgroundVisualizer =
-                        HashSettings.backgroundVisualizerOrDefault(hashPrefs, true)
-                    libraryPanel = HashSettings.libraryPanel(hashPrefs)
+                    lean = HashSettings.lean(hashPrefs)
                 },
             )
         }

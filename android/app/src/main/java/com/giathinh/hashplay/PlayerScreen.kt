@@ -20,7 +20,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -252,8 +251,7 @@ fun PlayerScreen(
         // header
         Row(Modifier.fillMaxWidth().padding(16.dp, 20.dp, 16.dp, 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Text("ncs player", color = Color(0xFF00E6B8), fontSize = 22.sp,
-                 fontFamily = PixelType.Display, fontWeight = FontWeight.Bold)
+            Text("hashplay", color = Color(0xFF00E6B8), fontSize = 22.sp)
             Spacer(Modifier.width(10.dp))
             Text("stream · download · listen", color = Color(0xFF8B91A5), fontSize = 12.sp)
             Spacer(Modifier.weight(1f))
