@@ -75,6 +75,40 @@ object HashSettings {
     /** The near-black the visualizer box used to be filled with. */
     val VisualizerInk = androidx.compose.ui.graphics.Color(0xFF07090D)
 
+    /**
+     * Read the background-visualizer option with a flavor-supplied default.
+     *
+     * The ncs layout is built around a full-bleed sphere, so ITS default is
+     * ON; full and lite keep OFF. `contains` rather than a plain read is what
+     * makes a per-flavor default possible -- a plain read cannot tell "the
+     * user chose false" from "nobody ever chose".
+     */
+    fun backgroundVisualizerOrDefault(p: SharedPreferences, default: Boolean): Boolean =
+        if (p.contains(KEY_BG_VIS)) p.getBoolean(KEY_BG_VIS, default) else default
+
+    // --- library panel ------------------------------------------------------
+    /**
+     * Whether the track list shows inside its bordered panel.
+     *
+     * Only the ncs layout consumes this today. Off means the screen is just
+     * the background sphere and the transport -- the pure "cover view".
+     */
+    fun libraryPanel(p: SharedPreferences): Boolean =
+        if (p.contains(KEY_LIB_PANEL)) p.getBoolean(KEY_LIB_PANEL, true) else true
+
+    fun setLibraryPanel(p: SharedPreferences, on: Boolean) {
+        p.edit().putBoolean(KEY_LIB_PANEL, on).apply()
+    }
+
+    /**
+     * The lean, or a caller-supplied default when the user has never set one.
+     *
+     * The ncs layout wants the ball right of centre out of the box; the
+     * neutral 0f default would put it dead centre and contradict that.
+     */
+    fun leanOrDefault(p: SharedPreferences, default: Float): Float =
+        if (p.contains(KEY_LEAN)) lean(p) else clampLean(default)
+
     // --- lean ---------------------------------------------------------------
     const val LEAN_MIN = -1f
     const val LEAN_MAX = 1f
@@ -144,6 +178,7 @@ object HashSettings {
 
     private const val KEY_THEME = "ui_theme"
     private const val KEY_BG_VIS = "background_visualizer"
+    private const val KEY_LIB_PANEL = "library_panel"
     private const val KEY_LEAN = "visualizer_lean"
     private const val KEY_GAIN = "player_gain"
 }

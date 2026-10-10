@@ -96,7 +96,15 @@ manifest = read(os.path.join(REPO, "android", "app", "src", "main",
 check('android:label="@string/app_name"' in manifest,
       "the manifest label is a resource, so a flavor can override it")
 lite_strings = read(os.path.join(ANDROID_SRC, "lite", "res", "values", "strings.xml"))
-check("HashPlay Lite" in lite_strings, "lite labels itself 'HashPlay Lite'")
+main_strings = read(os.path.join(ANDROID_SRC, "main", "res", "values", "strings.xml"))
+# The two flavors sit on the same home screen, so their labels must differ --
+# the exact wording is not the invariant (the app was debranded to "NCS
+# Player"), distinctness is.
+lite_name = lite_strings.split('name="app_name">')[1].split("<")[0]
+main_name = main_strings.split('name="app_name">')[1].split("<")[0]
+check(lite_name != main_name,
+      "the lite label differs from the main label (%s vs %s)" % (lite_name, main_name))
+check("Lite" in lite_name, "the lite label still says Lite (%s)" % lite_name)
 
 lite_stub = read(os.path.join(ANDROID_SRC, "lite", "java", "com",
                               "giathinh", "hashplay", "TorrentManager.kt"))

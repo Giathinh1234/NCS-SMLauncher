@@ -2,9 +2,9 @@
 <!--
   app_name lives here rather than as a literal in the manifest so the lite
   flavor can override it (app/src/lite/res/values/strings.xml). Both APKs can
-  be installed at once, and two home-screen icons both called "HashPlay" are
+  be installed at once, and two home-screen icons with the same label are
   impossible to tell apart.
 -->
 <resources>
-    <string name="app_name">HashPlay</string>
+    <string name="app_name">NCS Player</string>
 </resources>
